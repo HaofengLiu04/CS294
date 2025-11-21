@@ -1,0 +1,124 @@
+[
+  {
+    "id": "test_erc20_001",
+    "name": "Simple USDC Transfer",
+    "description": "Transfer 1000 USDC from deployer to user1",
+    "start_state": {
+      "account": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "ETH_balance": 10.0,
+      "USDC_balance": 5000
+    },
+    "operations": [
+      {
+        "type": "send_erc20",
+        "params": {
+          "token": "USDC",
+          "to": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+          "amount": 1000
+        }
+      }
+    ],
+    "end_state": {
+      "account": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "USDC_balance": 4000
+    }
+  },
+  {
+    "id": "test_erc20_002",
+    "name": "DAI Transfer with Balance Check",
+    "description": "Transfer 500 DAI and verify remaining balance",
+    "start_state": {
+      "account": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "ETH_balance": 10.0,
+      "DAI_balance": 2000
+    },
+    "operations": [
+      {
+        "type": "send_erc20",
+        "params": {
+          "token": "DAI",
+          "to": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+          "amount": 500
+        }
+      }
+    ],
+    "end_state": {
+      "account": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "DAI_balance": 1500
+    }
+  },
+  {
+    "id": "test_uniswap_001",
+    "name": "ETH to USDC Swap",
+    "description": "Swap 1 ETH for USDC on Uniswap V3",
+    "start_state": {
+      "account": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "ETH_balance": 10.0,
+      "USDC_balance": 0
+    },
+    "operations": [
+      {
+        "type": "swap_uniswap",
+        "params": {
+          "from_token": "ETH",
+          "to_token": "USDC",
+          "amount": 1.0,
+          "slippage_tolerance": 0.5
+        }
+      }
+    ],
+    "end_state": {
+      "account": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "ETH_balance": 9.0,
+      "USDC_balance": 2000
+    }
+  },
+  {
+    "id": "test_dao_001",
+    "name": "Cast DAO Vote",
+    "description": "Vote 'for' on a DAO proposal",
+    "start_state": {
+      "account": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "ETH_balance": 10.0
+    },
+    "operations": [
+      {
+        "type": "dao_vote",
+        "params": {
+          "dao_name": "Compound",
+          "proposal_id": "123",
+          "vote": "for"
+        }
+      }
+    ],
+    "end_state": {
+      "account": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "ETH_balance": 10.0
+    }
+  },
+  {
+    "id": "test_lending_001",
+    "name": "Supply USDC to Lending Protocol",
+    "description": "Supply 1000 USDC to 1inch lending protocol",
+    "start_state": {
+      "account": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "ETH_balance": 10.0,
+      "USDC_balance": 5000
+    },
+    "operations": [
+      {
+        "type": "lending_1inch",
+        "params": {
+          "action": "supply",
+          "token": "USDC",
+          "amount": 1000,
+          "protocol": "1inch"
+        }
+      }
+    ],
+    "end_state": {
+      "account": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "USDC_balance": 4000
+    }
+  }
+]
