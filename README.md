@@ -1,69 +1,64 @@
-# CS294 - Green Agent Evaluation Framework
+# CS294 - AI Agents Course Projects
 
-**A10 Team**: Mingxi Tang, Yufeng Yan, Haofeng Liu, Meixin Ma
+**Team A10**: Mingxi Tang, Yufeng Yan, Haofeng Liu, Meixin Ma
 
-## Project: Green Agent Evaluation for Crypto Trading AI Agent in DeFi Operations
+## Overview
 
-This repository contains our implementation of a Green Agent evaluation framework for crypto trading AI agents operating in DeFi environments.
+This repository contains implementations for evaluating AI agents in blockchain and DeFi environments, developed for UC Berkeley's CS294 AI Agents course (Fall 2025).
 
-## 📁 Project Structure
+## Project Structure
 
 ### `green_agent_demo/`
-Complete demonstration of our Green Agent evaluation framework:
+Initial demonstration of Green Agent evaluation framework for crypto trading AI agents.
 
-- **`green_agent.py`** - Core Green Agent implementation with multi-dimensional evaluation
-- **`demo.py`** - Interactive demonstration (requires user input)
-- **`video_demo.py`** - Automated demo for video recording
-- **`white_agent_simulator.py`** - Sample White Agent implementations
-- **`VIDEO_SCRIPT.md`** - Complete video recording guide and talking points
-- **`README.md`** - Detailed project documentation
+**Key Features:**
+- Multi-dimensional evaluation (correctness, safety, efficiency)
+- Risk factor detection and safety classification
+- Transaction simulation and outcome prediction
+- Interactive and automated demo modes
 
-## 🚀 Quick Start
-
+**Quick Start:**
 ```bash
 cd green_agent_demo
-python3 video_demo.py  # Automated demo for video recording
+python3 video_demo.py  # Automated demo
 python3 demo.py        # Interactive demo
 ```
 
-## 🎯 Project Overview
+### `defi_agent_eval/`
+Advanced DeFi agent evaluation framework with real blockchain integration.
 
-**Task**: Evaluate crypto trading AI agents in DeFi operations
+**Key Features:**
+- LLM-powered white agents using OpenAI GPT-4o
+- Real blockchain execution via Anvil (local Ethereum testnet)
+- ERC20 token operations with actual on-chain transactions
+- Natural language instruction processing
+- Comprehensive test scenarios and evaluation metrics
 
-**Environment**: Sandbox blockchain with realistic DeFi protocols (Uniswap, Curve, etc.)
+**Quick Start:**
+```bash
+cd defi_agent_eval
+# See defi_agent_eval/README.md for setup instructions
+```
 
-**Evaluation Dimensions**:
-- ✅ **Correctness**: Goal achievement & parameter validation
-- 🛡️ **Safety**: Risk detection & mitigation strategies  
-- ⚡ **Efficiency**: Gas optimization & routing analysis
+## Project Goals
+
+**Primary Task**: Evaluate AI agents operating in DeFi environments
+
+**Evaluation Dimensions:**
+- Correctness: Goal achievement and parameter validation
+- Safety: Risk detection and mitigation strategies
+- Efficiency: Gas optimization and routing analysis
 
 **Safety Classifications**: SAFE | MODERATE_RISK | HIGH_RISK | DANGEROUS
 
-## 🧪 Demo Features
-
-- Multi-dimensional agent evaluation with weighted scoring
-- Risk factor detection (slippage, MEV, contract verification)
-- Transaction simulation with outcome prediction
-- Safety classification with clear thresholds
-- Actionable recommendations for improvement
-- Comprehensive reporting and analysis
-
-## 📊 Example Results
-
-Our Green Agent successfully evaluates diverse agent types:
-- **OptimalSwapBot** (Score: 0.92/1.00, SAFE) - Efficient operations approved
-- **RiskyArb** (Score: 0.46/1.00, DANGEROUS) - High-risk operations rejected
-- **SmartRebalancer** (Score: 0.90/1.00, SAFE) - Good strategy approved
-
-## 🎬 Video Demo
-
-The automated demo (`video_demo.py`) provides a 3-minute walkthrough suitable for course submission, covering:
-1. Task introduction and environment setup
-2. Live evaluation of three different agent types
-3. Design rationale and framework capabilities
-
----
+## Repository Information
 
 **Course**: CS294 - AI Agents  
 **Institution**: UC Berkeley  
 **Semester**: Fall 2025
+
+## Documentation
+
+Detailed documentation is available in each project directory:
+- `green_agent_demo/README.md` - Demo implementation guide
+- `defi_agent_eval/README.md` - Advanced framework documentation

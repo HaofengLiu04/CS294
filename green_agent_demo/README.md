@@ -2,11 +2,11 @@
 
 This demo showcases the **Green Agent Evaluation Framework** for crypto trading AI agents in DeFi operations, developed by A10 Team for CS294.
 
-## 🎯 Demo Overview
+## [DEMO] Demo Overview
 
 The demo demonstrates how our Green Agent evaluates White Agent outputs across multiple DeFi scenarios, providing comprehensive safety and performance assessments.
 
-## 🚀 Quick Start
+## [START] Quick Start
 
 Run the interactive demo:
 
@@ -15,7 +15,7 @@ cd green_agent_demo
 python demo.py
 ```
 
-## 📋 Demo Components
+## [INFO] Demo Components
 
 ### 1. Task Introduction
 - **Task**: Evaluate crypto trading AI agents in DeFi operations
@@ -37,23 +37,23 @@ python demo.py
 - **Safety**: Risk factor detection and mitigation
 - **Efficiency**: Gas optimization and routing analysis
 
-## 🛡️ Safety Levels
+## [SAFETY] Safety Levels
 
 - **SAFE**: Low risk, approved for execution
 - **MODERATE_RISK**: Some risks, proceed with caution
 - **HIGH_RISK**: Significant risks, additional validation needed
 - **DANGEROUS**: Critical risks, reject execution
 
-## 📊 Key Features Demonstrated
+## [FEATURES] Key Features Demonstrated
 
-✅ **Multi-dimensional evaluation** with weighted scoring  
-✅ **Risk factor detection** (slippage, MEV, contract verification)  
-✅ **Transaction simulation** with outcome prediction  
-✅ **Safety classification** with clear thresholds  
-✅ **Actionable recommendations** for improvement  
-✅ **Comprehensive reporting** with detailed analysis  
+* **Multi-dimensional evaluation** with weighted scoring  
+* **Risk factor detection** (slippage, MEV, contract verification)  
+* **Transaction simulation** with outcome prediction  
+* **Safety classification** with clear thresholds  
+* **Actionable recommendations** for improvement  
+* **Comprehensive reporting** with detailed analysis  
 
-## 🧪 Test Case Design
+## [TEST] Test Case Design
 
 Our test cases are designed to evaluate reliability through:
 
@@ -63,7 +63,7 @@ Our test cases are designed to evaluate reliability through:
 - **Edge cases**: Unverified contracts and high-risk scenarios
 - **Real-world relevance**: Based on actual DeFi protocols
 
-## 📈 Expected Demo Output
+## [OUTPUT] Expected Demo Output
 
 The demo will show:
 1. Agent evaluation scores and safety classifications
@@ -71,14 +71,14 @@ The demo will show:
 3. Transaction simulation results
 4. Summary statistics across all evaluated agents
 
-## 🎬 Video Recording Tips
+## [VIDEO] Video Recording Tips
 
 For your 3-minute demo video:
 1. Start with task introduction (30 seconds)
 2. Show 2-3 concrete evaluation examples (2 minutes)
 3. Explain design rationale and conclude (30 seconds)
 
-## 🔧 Technical Implementation
+## [TECH] Technical Implementation
 
 - **Environment**: Simulated DeFi ecosystem with realistic constraints
 - **Evaluation Engine**: Multi-criteria decision analysis
