@@ -18,7 +18,7 @@ class SimpleTestAgent(WhiteAgent):
         
         # Check what type of execution is requested
         if 'cli_command' in context:
-            print(f"\n  📋 Would execute CLI command:")
+            print(f"\n  [INFO] Would execute CLI command:")
             print(f"     {context['cli_command'][:80]}...")
             method = "CLI"
         elif 'python_code' in context:
@@ -26,7 +26,7 @@ class SimpleTestAgent(WhiteAgent):
             print(f"     {context['python_code'][:80].strip()}...")
             method = "Code"
         else:
-            print(f"\n  🤖 Would use LLM to interpret instruction")
+            print(f"\n  [AGENT] Would use LLM to interpret instruction")
             method = "LLM"
         
         exec_time = time.time() - start
@@ -41,7 +41,7 @@ class SimpleTestAgent(WhiteAgent):
 
 def main():
     print("\n" + "=" * 70)
-    print("🤖 White Agent Architecture Demo")
+    print("[AGENT] White Agent Architecture Demo")
     print("=" * 70)
     
     print("\nWhite agents are AI agents that:")
@@ -63,7 +63,7 @@ def main():
     }
     print(f"  Instruction: {instruction1}")
     result1 = agent.execute_instruction(instruction1, context1)
-    print(f"  ✅ Success: {result1.success} (execution time: {result1.execution_time:.3f}s)")
+    print(f"  [OK] Success: {result1.success} (execution time: {result1.execution_time:.3f}s)")
     
     # Test 2: Code-based execution
     print("\n2️⃣  Code White Agent (uses Web3.py Python code)")
@@ -73,7 +73,7 @@ def main():
     }
     print(f"  Instruction: {instruction2}")
     result2 = agent.execute_instruction(instruction2, context2)
-    print(f"  ✅ Success: {result2.success} (execution time: {result2.execution_time:.3f}s)")
+    print(f"  [OK] Success: {result2.success} (execution time: {result2.execution_time:.3f}s)")
     
     # Test 3: LLM-based execution
     print("\n3️⃣  LLM White Agent (autonomously interprets instructions)")
@@ -83,7 +83,7 @@ def main():
     }
     print(f"  Instruction: {instruction3}")
     result3 = agent.execute_instruction(instruction3, context3)
-    print(f"  ✅ Success: {result3.success} (execution time: {result3.execution_time:.3f}s)")
+    print(f"  [OK] Success: {result3.success} (execution time: {result3.execution_time:.3f}s)")
     
     print("\n" + "-" * 70)
     print("Files Created:")
@@ -95,7 +95,7 @@ def main():
     print("  📄 white_agent/__init__.py      - Package exports")
     
     print("\n" + "=" * 70)
-    print("✅ White Agent Architecture Complete!")
+    print("[OK] White Agent Architecture Complete!")
     print("=" * 70)
     
     print("\nNext Steps:")

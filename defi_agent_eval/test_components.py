@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def test_instruction_generator():
     """Test instruction generation without blockchain"""
-    print("🧪 Testing Instruction Generator...")
+    print("[TEST] Testing Instruction Generator...")
     print("=" * 60)
     
     from green_agent.core.instruction_generator import InstructionGenerator
@@ -44,12 +44,12 @@ def test_instruction_generator():
     
     instruction = generator.generate_with_context(test_scenario)
     print(instruction)
-    print("\n✅ Instruction Generator: PASSED")
+    print("\n[OK] Instruction Generator: PASSED")
     return True
 
 def test_cli_code_generation():
     """Test CLI command and Python code generation"""
-    print("\n🧪 Testing CLI/Code Generation...")
+    print("\n[TEST] Testing CLI/Code Generation...")
     print("=" * 60)
     
     # Mock blockchain client for testing
@@ -99,7 +99,7 @@ def test_cli_code_generation():
     python_code = erc20.generate_python_code(params, client.accounts['deployer'])
     print(python_code[:300] + "...")
     
-    print("\n✅ CLI/Code Generation: PASSED")
+    print("\n[OK] CLI/Code Generation: PASSED")
     return True
 
 def check_requirements():
@@ -108,32 +108,32 @@ def check_requirements():
     print("=" * 60)
     
     requirements = {
-        "web3": "✅ Installed",
-        "eth_account": "✅ Installed", 
-        "python-dotenv": "✅ Installed"
+        "web3": "[OK] Installed",
+        "eth_account": "[OK] Installed", 
+        "python-dotenv": "[OK] Installed"
     }
     
     missing = []
     
     try:
         import web3
-        print(f"✅ web3: {web3.__version__}")
+        print(f"[OK] web3: {web3.__version__}")
     except ImportError:
-        requirements["web3"] = "❌ Missing"
+        requirements["web3"] = "[ERROR] Missing"
         missing.append("web3")
     
     try:
         import eth_account
-        print(f"✅ eth_account: installed")
+        print(f"[OK] eth_account: installed")
     except ImportError:
-        requirements["eth_account"] = "❌ Missing"
+        requirements["eth_account"] = "[ERROR] Missing"
         missing.append("eth-account")
     
     try:
         import dotenv
-        print(f"✅ python-dotenv: installed")
+        print(f"[OK] python-dotenv: installed")
     except ImportError:
-        requirements["python-dotenv"] = "❌ Missing"
+        requirements["python-dotenv"] = "[ERROR] Missing"
         missing.append("python-dotenv")
     
     # Check Anvil
@@ -141,7 +141,7 @@ def check_requirements():
     try:
         result = subprocess.run(['which', 'anvil'], capture_output=True, text=True)
         if result.returncode == 0:
-            print(f"✅ Anvil (Foundry): installed at {result.stdout.strip()}")
+            print(f"[OK] Anvil (Foundry): installed at {result.stdout.strip()}")
         else:
             print(f"⚠️  Anvil: Not installed (needed for full blockchain testing)")
             print(f"   Install: curl -L https://foundry.paradigm.xyz | bash && foundryup")
@@ -149,14 +149,14 @@ def check_requirements():
         print(f"⚠️  Anvil: Not installed")
     
     if missing:
-        print(f"\n❌ Missing packages: {', '.join(missing)}")
+        print(f"\n[ERROR] Missing packages: {', '.join(missing)}")
         print(f"   Install: pip install {' '.join(missing)}")
         return False
     
     return True
 
 def main():
-    print("🚀 DeFi Agent Evaluation Framework - Component Test")
+    print("[START] DeFi Agent Evaluation Framework - Component Test")
     print("=" * 80)
     
     # Check requirements
@@ -174,7 +174,7 @@ def main():
         test_cli_code_generation()
         
         print("\n" + "=" * 80)
-        print("🎉 ALL COMPONENT TESTS PASSED!")
+        print("[SUCCESS] ALL COMPONENT TESTS PASSED!")
         print("=" * 80)
         print("\n📝 Next Steps:")
         print("1. Install Anvil: curl -L https://foundry.paradigm.xyz | bash && foundryup")
@@ -182,7 +182,7 @@ def main():
         print("3. Run full evaluation: python -m green_agent.core.evaluator")
         
     except Exception as e:
-        print(f"\n❌ Test failed with error: {e}")
+        print(f"\n[ERROR] Test failed with error: {e}")
         import traceback
         traceback.print_exc()
 

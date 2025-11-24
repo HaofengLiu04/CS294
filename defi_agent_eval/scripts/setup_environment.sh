@@ -5,39 +5,39 @@
 
 set -e
 
-echo "🔧 Setting up DeFi Agent Evaluation Environment"
+echo "[SETUP] Setting up DeFi Agent Evaluation Environment"
 echo "================================================"
 
 # Check if Foundry is installed
 if ! command -v foundryup &> /dev/null; then
-    echo "📦 Installing Foundry..."
+    echo "[INSTALL] Installing Foundry..."
     curl -L https://foundry.paradigm.xyz | bash
     source ~/.bashrc || source ~/.zshrc
     foundryup
 else
-    echo "✅ Foundry already installed"
+    echo "[OK] Foundry already installed"
 fi
 
 # Check if Anvil is available
 if ! command -v anvil &> /dev/null; then
-    echo "❌ Anvil not found. Please run 'foundryup' and try again."
+    echo "[ERROR] Anvil not found. Please run 'foundryup' and try again."
     exit 1
 fi
 
-echo "✅ Foundry/Anvil is ready"
+echo "[OK] Foundry/Anvil is ready"
 
 # Load environment variables
 if [ -f .env ]; then
     export $(cat .env | grep -v '^#' | xargs)
-    echo "✅ Environment variables loaded"
+    echo "[OK] Environment variables loaded"
 else
-    echo "⚠️  Warning: .env file not found. Using defaults."
-    echo "   Please copy .env.example to .env and configure your API keys."
+    echo "[WARNING] Warning: .env file not found. Using defaults."
+    echo "          Please copy .env.example to .env and configure your API keys."
 fi
 
 # Start Anvil with mainnet fork
 echo ""
-echo "🚀 Starting Anvil (Local Ethereum Fork)..."
+echo "[START] Starting Anvil (Local Ethereum Fork)..."
 echo "================================================"
 
 FORK_URL="${FORK_URL:-https://eth-mainnet.g.alchemy.com/v2/demo}"
@@ -45,7 +45,7 @@ FORK_URL="${FORK_URL:-https://eth-mainnet.g.alchemy.com/v2/demo}"
 echo "Fork URL: $FORK_URL"
 echo "RPC URL: http://127.0.0.1:8545"
 echo ""
-echo "📝 Anvil will run with the following configuration:"
+echo "[CONFIG] Anvil will run with the following configuration:"
 echo "   - Chain ID: 1 (Ethereum Mainnet)"
 echo "   - Accounts: 10 pre-funded test accounts"
 echo "   - Gas Price: 0 (free transactions)"

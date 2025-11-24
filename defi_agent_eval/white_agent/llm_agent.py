@@ -6,10 +6,23 @@ blockchain operations autonomously using an LLM.
 """
 
 import time
+import json
+import os
+import sys
+from pathlib import Path
 from typing import Dict, Any, Optional
 from web3 import Web3
 from eth_account import Account
+from openai import OpenAI
+from dotenv import load_dotenv
 from .base_agent import WhiteAgent, ExecutionResult
+
+# Import blockchain client
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+from green_agent.blockchain.web3_client import BlockchainClient
+
+load_dotenv()
 
 
 class LLMWhiteAgent(WhiteAgent):
@@ -37,13 +50,24 @@ class LLMWhiteAgent(WhiteAgent):
             name=name,
             description="AI agent that interprets instructions using LLM and executes blockchain operations"
         )
-        self.w3 = Web3(Web3.HTTPProvider(rpc_url))
+        
+        # Initialize blockchain client
+        self.blockchain_client = BlockchainClient(rpc_url=rpc_url)
+        self.w3 = self.blockchain_client.w3
+        
         self.private_key = private_key
         if private_key:
             self.account = Account.from_key(private_key)
+            self.account_address = self.account.address
         else:
             self.account = None
-        self.llm_api_key = llm_api_key
+            self.account_address = None
+        
+        # Initialize OpenAI client
+        api_key = llm_api_key or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OpenAI API key is required. Set OPENAI_API_KEY in .env file.")
+        self.client = OpenAI(api_key=api_key)
     
     def execute_instruction(self, instruction: str, context: Dict[str, Any]) -> ExecutionResult:
         """
@@ -60,6 +84,7 @@ class LLMWhiteAgent(WhiteAgent):
         
         try:
             # Step 1: Use LLM to understand instruction and generate plan
+            print(f"[LLM] {self.name}: Analyzing instruction with LLM...")
             plan = self._generate_execution_plan(instruction, context)
             
             if not plan:
@@ -68,7 +93,10 @@ class LLMWhiteAgent(WhiteAgent):
                     error="Failed to generate execution plan from LLM"
                 )
             
+            print(f"[PLAN] {self.name}: Generated plan: {json.dumps(plan, indent=2)}")
+            
             # Step 2: Execute the plan
+            print(f"[EXEC] {self.name}: Executing plan...")
             result = self._execute_plan(plan, context)
             
             execution_time = time.time() - start_time
@@ -94,57 +122,123 @@ class LLMWhiteAgent(WhiteAgent):
     def _generate_execution_plan(self, instruction: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         Use LLM to interpret instruction and create execution plan.
-        
-        In a real implementation, this would:
-        1. Send instruction + context to LLM API
-        2. Get structured plan with operation type, parameters, etc.
-        3. Validate the plan
-        
-        For now, returns a simple mock plan.
         """
-        # TODO: Integrate with actual LLM API (OpenAI, Anthropic, etc.)
-        # Example prompt:
-        # """
-        # You are a DeFi trading agent. Given this instruction and context,
-        # generate a structured execution plan.
-        # 
-        # Instruction: {instruction}
-        # Context: {context}
-        # 
-        # Return JSON with: operation_type, parameters, validation_checks
-        # """
-        
-        # Mock implementation for now
-        return {
-            'operation_type': 'erc20_transfer',
-            'parameters': {
-                'token': context.get('tokens', ['USDC'])[0],
-                'amount': 1000,
-                'recipient': '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1'
-            },
-            'validation': {
-                'check_balance': True,
-                'check_allowance': False
-            }
-        }
+        prompt = f"""You are a DeFi agent assistant. Your job is to convert natural language instructions into structured JSON execution plans.
+
+Instruction:
+{instruction}
+
+Context:
+{json.dumps(context, indent=2, default=str)}
+
+Based on the instruction, generate a JSON object with this structure:
+{{
+    "operation_type": "send_erc20",
+    "parameters": {{
+        "token": "TOKEN_SYMBOL",
+        "to": "0x...",
+        "amount": NUMBER
+    }}
+}}
+
+Rules:
+- Extract the token symbol, recipient address, and amount from the instruction
+- The operation_type should be "send_erc20" for token transfers
+- Return ONLY valid JSON, nothing else
+
+Generate the execution plan now:"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that outputs only valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            content = response.choices[0].message.content
+            return json.loads(content)
+        except Exception as e:
+            print(f"[ERROR] Error calling OpenAI API: {e}")
+            return None
     
     def _execute_plan(self, plan: Dict[str, Any], context: Dict[str, Any]) -> ExecutionResult:
         """
-        Execute the plan generated by LLM.
-        
-        This would typically:
-        1. Generate Web3 code based on operation type
-        2. Execute the transaction
-        3. Verify success
+        Execute the plan generated by LLM on the actual blockchain.
         """
-        # TODO: Implement actual execution based on operation type
-        # For now, return mock result
+        start_time = time.time()
+        op_type = plan.get("operation_type")
+        params = plan.get("parameters", {})
         
-        return ExecutionResult(
-            success=True,
-            transaction_hash="0x" + "0" * 64,  # Mock tx hash
-            metadata={
-                'plan': plan,
-                'note': 'This is a mock LLM agent. Integrate with real LLM API for production use.'
-            }
-        )
+        try:
+            tx_hash = None
+            gas_used = None
+            
+            if op_type == "send_erc20":
+                # Transfer ERC20 tokens on the blockchain
+                token = params.get("token")
+                to_address = params.get("to")
+                amount = params.get("amount")
+                
+                print(f"[TX] Transferring {amount} {token} to {to_address} on blockchain...")
+                
+                result = self.blockchain_client.transfer_erc20(
+                    token_name=token,
+                    from_account=self.account_address,
+                    to_account=to_address,
+                    amount=amount,
+                    private_key=self.private_key
+                )
+                
+                if not result.get("success"):
+                    raise Exception(f"Transaction failed: {result.get('error')}")
+                
+                tx_hash = result.get("tx_hash")
+                gas_used = result.get("gas_used")
+                print(f"[SUCCESS] Transaction mined: {tx_hash}")
+                print(f"          Gas used: {gas_used}")
+                
+            elif op_type == "send_eth":
+                # Transfer ETH on the blockchain
+                to_address = params.get("to")
+                amount = params.get("amount")
+                
+                print(f"[TX] Sending {amount} ETH to {to_address} on blockchain...")
+                
+                tx_hash = self.blockchain_client.send_eth(
+                    from_account=self.account_address,
+                    to_account=to_address,
+                    amount_eth=amount,
+                    private_key=self.private_key
+                )
+                
+                print(f"[SUCCESS] Transaction mined: {tx_hash}")
+                
+            else:
+                raise Exception(f"Unsupported operation type: {op_type}")
+            
+            execution_time = time.time() - start_time
+            
+            return ExecutionResult(
+                success=True,
+                transaction_hash=tx_hash,
+                execution_time=execution_time,
+                metadata={
+                    'plan': plan,
+                    'gas_used': gas_used,
+                    'note': 'Real blockchain transaction executed successfully'
+                }
+            )
+            
+        except Exception as e:
+            print(f"[ERROR] Blockchain execution failed: {e}")
+            execution_time = time.time() - start_time
+            return ExecutionResult(
+                success=False,
+                transaction_hash=None,
+                execution_time=execution_time,
+                error=str(e),
+                metadata={'plan': plan}
+            )

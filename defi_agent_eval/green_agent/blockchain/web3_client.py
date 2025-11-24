@@ -106,7 +106,7 @@ class BlockchainClient:
             from eth_account import Account
             account = Account.from_key(private_key)
             signed_tx = account.sign_transaction(tx)
-            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
             
             # Wait for receipt
             receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
@@ -188,7 +188,7 @@ class BlockchainClient:
         }
         
         signed_tx = account.sign_transaction(tx)
-        tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        tx_hash = self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
         
         return receipt['transactionHash'].hex()

@@ -147,7 +147,7 @@ def test_llm_agent():
 
 
 def main():
-    print("\n🤖 White Agent Testing Suite\n")
+    print("\n[AGENT] White Agent Testing Suite\n")
     
     print("This demonstrates three types of white agents:")
     print("1. CLI Agent - Executes via Foundry cast commands")
@@ -160,13 +160,13 @@ def main():
         test_llm_agent()
         
         print("\n" + "=" * 60)
-        print("✅ All white agent types demonstrated!")
+        print("[OK] All white agent types demonstrated!")
         print("=" * 60)
         print("\nNote: Actual execution requires Anvil running.")
         print("Install Foundry and run: anvil --fork-url <ALCHEMY_URL>")
         
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n[ERROR] Error: {e}")
         import traceback
         traceback.print_exc()
 

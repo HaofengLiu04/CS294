@@ -1,6 +1,6 @@
 # Quick Start Guide - DeFi Agent Evaluation
 
-## 🚀 Get Running in 5 Minutes
+## [START] Get Running in 5 Minutes
 
 ### Step 1: Install Foundry
 
@@ -74,31 +74,31 @@ test = {
 
 # Run evaluation
 result = evaluator.evaluate_scenario(test)
-print(f"\\nTest {'PASSED ✅' if result['success'] else 'FAILED ❌'}")
+print(f"\\nTest {'PASSED [OK]' if result['success'] else 'FAILED [ERROR]'}")
 EOF
 ```
 
-## 🎯 Expected Output
+## [RESULT] Expected Output
 
 You should see:
 
 ```
-🔬 Evaluating Scenario: quick_test
+[EVAL] Evaluating Scenario: quick_test
 ============================================================
-📋 Step 1: Setting up initial blockchain state...
-✅ Initial state ready
+[INFO] Step 1: Setting up initial blockchain state...
+[OK] Initial state ready
 
-💬 Step 2: Generating natural language instruction...
-📝 Instruction: Transfer 1000 USDC tokens to address...
+[INPUT] Step 2: Generating natural language instruction...
+[INSTRUCTION] Instruction: Transfer 1000 USDC tokens to address...
 
-⚙️  Step 3: Executing operations...
-📊 Execution result: success
+[EXEC]  Step 3: Executing operations...
+[DATA] Execution result: success
 
-✓ Step 4: Verifying end state...
-🎯 Verification: PASSED
+[VERIFY] Step 4: Verifying end state...
+[RESULT] Verification: PASSED
 ```
 
-## 🧪 Run Full Test Suite
+## [TEST] Run Full Test Suite
 
 ```bash
 python3 << 'EOF'
@@ -121,7 +121,7 @@ print(f"Passed: {summary['passed']}/{summary['total_tests']}")
 EOF
 ```
 
-## 🐛 Troubleshooting
+## [DEBUG] Troubleshooting
 
 ### Anvil not found
 ```bash
@@ -152,14 +152,14 @@ lsof -i :8545
 # Get a free key at: https://www.alchemy.com/
 ```
 
-## ✅ Next Steps
+## [OK] Next Steps
 
-1. ✅ **Add more operations**: Uniswap swaps, DAO voting, etc.
-2. ✅ **Build white agent**: Create AI agent that executes instructions
-3. ✅ **Expand test suite**: Add edge cases and failure scenarios
-4. ✅ **Integration testing**: Test with real LLM-based agents
+1. [OK] **Add more operations**: Uniswap swaps, DAO voting, etc.
+2. [OK] **Build white agent**: Create AI agent that executes instructions
+3. [OK] **Expand test suite**: Add edge cases and failure scenarios
+4. [OK] **Integration testing**: Test with real LLM-based agents
 
-## 📚 Additional Resources
+## [DOCS] Additional Resources
 
 - [Foundry Documentation](https://book.getfoundry.sh/)
 - [Web3.py Documentation](https://web3py.readthedocs.io/)
