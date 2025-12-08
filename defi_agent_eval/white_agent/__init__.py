@@ -11,17 +11,20 @@ try:
     from .cli_agent import CLIWhiteAgent
     from .code_agent import CodeWhiteAgent
     from .llm_agent import LLMWhiteAgent
+    from .trading_agent import RealWorldTradingAgent  # Real exchange trading
     _all_agents_available = True
 except ImportError:
     _all_agents_available = False
     CLIWhiteAgent = None
     CodeWhiteAgent = None
     LLMWhiteAgent = None
+    RealWorldTradingAgent = None
 
 __all__ = [
     'WhiteAgent',
     'ExecutionResult',
     'CLIWhiteAgent',
     'CodeWhiteAgent',
-    'LLMWhiteAgent'
+    'LLMWhiteAgent',
+    'RealWorldTradingAgent'  # Real-world trading agent
 ]
