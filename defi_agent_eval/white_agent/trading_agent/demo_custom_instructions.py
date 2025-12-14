@@ -30,7 +30,7 @@ def demo_custom_instructions():
     )
     
     print("=" * 80)
-    print("NoFx Agent with Custom Instructions")
+    print("Trading Agent with Custom Instructions")
     print("=" * 80)
     
     # Example 1: No custom instruction (autonomous mode)
