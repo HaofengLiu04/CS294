@@ -79,6 +79,8 @@ Prerequisites:
 - Python 3.11+
 - [`uv`](https://github.com/astral-sh/uv)
 - A `.env` file in `agentbeats-tutorial/` containing your API key(s) (do **not** commit keys)
+  - **Required**: `DEEPSEEK_API_KEY` - Your DeepSeek API key for LLM-based agents
+- **VPN Required**: If you're in the US, you need a VPN to access Binance data (Binance US does not allow access to Binance.com data)
 
 One-time install (install everything in this workspace first):
 ```bash
