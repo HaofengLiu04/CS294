@@ -1,0 +1,1870 @@
+# Trading Agent Competition - 完整实现计划
+
+## 📋 项目概述
+
+基于AgentBeats框架构建多Agent交易竞赛系统，评估不同策略的交易agents在**2024年11月14日至12月14日**真实市场数据中的表现，核心优化目标为**夏普比率（Sharpe Ratio）**。
+
+---
+
+## 🎯 核心目标
+
+1. **公平竞赛**：所有agents在相同市场条件下竞争
+2. **夏普优化**：奖励高收益+低波动的策略
+3. **完整评估**：13个核心指标，5个评分维度
+4. **策略对比**：测试5种不同交易策略的优劣
+
+## ⏱️ 决策周期配置
+
+### 时间框架
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| **回测期间** | 2024-11-14 至 2024-12-14 | 30天 |
+| **数据粒度** | 4小时K线 | 从Binance获取4h OHLCV |
+| **决策频率** | 每4小时一次 | 每根K线触发一次AI决策 |
+| **总决策次数** | 180次 | 30天 × 6次/天 |
+| **披露间隔** | 每7天 (约42次决策) | Day 7, 14, 21披露 |
+
+
+#### 不同频率对比
+
+| 频率 | 决策次数/agent | 5agents总调用 | 预估成本 | 回测时间 | 适用场景 | 推荐度 |
+|------|--------------|--------------|---------|---------|---------|--------|
+| **3分钟** | 14,400 | 72,000 | $500-1000 | 40小时 | 实盘高频 | ❌ 不推荐 |
+| **15分钟** | 2,880 | 14,400 | $100-200 | 8小时 | 日内交易 | ⚠️ 成本高 |
+| **1小时** | 720 | 3,600 | $25-50 | 2小时 | 日内/短线 | ✅ 可行 |
+| **4小时** | 180 | 900 | $6-12 | 30分钟 | Swing交易 | ✅✅ 推荐 |
+| **1天** | 30 | 150 | $1-2 | 5分钟 | 长线投资 | ⚠️ 样本少 |
+
+#### 推荐方案：4小时（回测）+ 3分钟（实盘）
+
+**回测阶段（验证策略）：**
+```toml
+timeframe = "4h"
+total_cycles = 180
+purpose = "策略验证、参数优化、风险评估"
+```
+
+**实盘阶段（真实交易）：**
+```toml
+timeframe = "3m"
+purpose = "实时监控、快速响应"
+note = "但不意味着每3分钟都交易！大多数时候是wait"
+```
+
+
+
+#### 灵活配置方案
+
+```toml
+[scenario.config]
+# 快速测试（降低成本）
+# timeframe = "1d"
+# total_cycles = 30
+
+# 标准回测（推荐）
+timeframe = "4h"
+total_cycles = 180
+
+# 精细回测（成本较高）
+# timeframe = "1h"
+# total_cycles = 720
+
+# 实盘模式（需要实时数据流）
+# timeframe = "3m"
+# total_cycles = 14400
+# real_time_mode = true
+```
+
+### 决策时间点示例
+
+```
+2024-11-14:
+  00:00 - 决策#1
+  04:00 - 决策#2
+  08:00 - 决策#3
+  12:00 - 决策#4
+  16:00 - 决策#5
+  20:00 - 决策#6
+
+2024-11-15:
+  00:00 - 决策#7
+  04:00 - 决策#8
+  ...
+
+2024-11-21 00:00 - 决策#42 → 📢 披露点1
+2024-11-28 00:00 - 决策#84 → 📢 披露点2
+2024-12-05 00:00 - 决策#126 → 📢 披露点3
+2024-12-14 20:00 - 决策#180 → 🏁 竞赛结束
+```
+
+### ⚡ 关键：4小时决策 + 3分钟级别数据
+
+虽然我们每4小时做一次决策，但可以在prompt中提供**最近的3分钟K线数据**，让AI有更细粒度的信息：
+
+```python
+# 当前时间: 2024-11-14 12:00 (决策#4)
+
+# 提供给AI的数据：
+recent_3m_candles = get_klines(
+    symbol="BTCUSDT",
+    interval="3m",
+    start="2024-11-14 08:00",  # 最近4小时
+    end="2024-11-14 12:00"
+)  # 返回80根3分钟K线
+
+# Prompt中展示为：
+"""
+Intraday series (3-minute intervals, 最近80根K线):
+Mid prices: [87234.50, 87245.30, 87256.80, ... (80个价格)]
+Volume: [152345, 153456, 154567, ... (80个成交量)]
+EMA20 on 3m: [87123.45, 87134.56, ... (基于3分钟计算的EMA)]
+"""
+
+# 但agent只需要在12:00这个时间点做一次决策
+```
+
+**优势：**
+- ✅ AI看到细粒度的价格波动和成交量变化
+- ✅ 可以分析短期趋势和支撑/阻力
+- ✅ 决策质量更高（信息更丰富）
+- ✅ 但只决策180次，成本可控
+
+**实现：**
+```python
+def build_market_prompt(self, agent_name: str, cycle_idx: int, timestamp: pd.Timestamp):
+    # 决策时间点：每4小时
+    decision_time = timestamp  # 例如：2024-11-14 12:00
+    
+    # 获取4小时K线（用于长期趋势）
+    df_4h = self.data_4h.loc[:decision_time]
+    
+    # 获取最近4小时的3分钟K线（用于短期分析）
+    lookback_start = decision_time - pd.Timedelta(hours=4)
+    df_3m = get_klines_3m(symbol, lookback_start, decision_time)
+    
+    prompt = f"""
+时间: {decision_time} | 周期: #{cycle_idx} | Round {self.current_round}
+
+BTC当前价: {df_4h['close'].iloc[-1]}
+
+## 长期趋势（4小时级别，最近10根K线）
+OHLCV: ...
+EMA20/50, MACD, RSI: ...
+
+## 短期波动（3分钟级别，最近80根K线）
+Intraday prices: [{df_3m['close'].tolist()[-80:]}]
+Volume: [{df_3m['volume'].tolist()[-80:]}]
+EMA indicators (20-period on 3m): [...]
+
+基于以上信息，做出你的交易决策。
+"""
+```
+
+
+
+### 可配置的决策频率
+
+如果需要调整，可在 `scenario.toml` 中配置：
+
+```toml
+[scenario.config]
+start_date = "2024-11-14"
+end_date = "2024-12-14"
+
+# 决策频率配置
+decision_timeframe = "4h"              # AI做决策的频率: "1h", "4h", "1d"
+decisions_per_day = 6                  # 自动计算: 24h / timeframe
+total_decision_cycles = 180            # 30天 × 6次/天
+
+# 数据粒度配置（提供给AI看的数据）
+data_granularity = "3m"                # 提供3分钟级别的细粒度数据
+intraday_lookback_hours = 4            # 每次决策时，提供最近4小时的3分钟数据
+intraday_candles_count = 80            # 4小时 ÷ 3分钟 = 80根K线
+
+# 这样设计的好处：
+# - AI每4小时决策一次（成本可控）
+# - 但能看到3分钟级别的价格波动（信息丰富）
+# - 类似实盘的"每3分钟扫描，但不一定每次都交易"
+```
+
+---
+
+
+## 📁 文件结构
+
+```
+tutorial/scenarios/trading/
+├── models.py                    # 数据模型 
+├── trading_evaluator.py         # Green Agent 
+├── trading_agent.py             # White Agent 
+├── scenario.toml                # 配置文件 
+├── README.md                    # 使用文档
+├── requirements.txt             # 依赖
+└── data/
+    └── cache/                   # API数据缓存
+```
+
+---
+
+## 🏗️ 架构设计
+
+### 1. Green Agent (TradingEvaluator)
+
+**职责：**
+- 从Binance API加载2024-11-14至2024-12-14的历史数据
+  - **4小时K线**：用于决策时间点（180个决策周期）
+  - **3分钟K线**：用于提供细粒度市场信息
+- 计算技术指标（EMA20/50, MACD, RSI7/14, ATR14）
+  - 4小时级别：长期趋势
+  - 3分钟级别：短期波动
+- 每4小时构建完整市场prompt（包含OHLCV + 指标 + 账户状态）
+- 发送给所有White Agents，收集XML格式决策
+- **⭐ 使用LLM评估reasoning质量**
+  - 评估Decision Process遵循度
+  - 评估技术分析准确性
+  - 评估风险评估合理性
+  - 评估逻辑一致性
+  - 生成reasoning分数（0-1）
+- 在隔离账户中执行交易（应用费用5bps、滑点2bps）
+- 计算13个核心指标，5个评分维度
+- **综合评分**：交易绩效（70%）+ Reasoning质量（30%）
+- 最终排名，宣布获胜者
+
+**关键方法：**
+```python
+class TradingEvaluatorTools:
+    # 数据准备
+    def load_and_prepare_data()           # 加载历史数据+计算所有技术指标
+    def _fetch_from_binance()             # 从Binance API获取K线数据
+    def _fetch_4h_klines()                # 获取4小时K线（决策时间点）
+    def _fetch_3m_klines()                # 获取3分钟K线（细粒度数据）
+    def _calculate_indicators()           # 计算EMA/MACD/RSI/ATR
+    def _calculate_indicators_4h()        # 4小时指标（趋势）
+    def _calculate_indicators_3m()        # 3分钟指标（短期）
+    
+    # Prompt构建 ⭐ 核心
+    def build_market_prompt(agent_name)   # 构建个性化prompt
+    def _read_agent_positions(agent)      # 读取该agent的持仓（从BacktestAccount）
+    def _format_position(position)        # 格式化单个持仓信息
+    def _format_candidate(symbol, day)    # 格式化候选币种信息
+    def _get_candidate_symbols()          # 获取候选币种列表
+    
+    # Agent通信
+    async def get_agent_decision()        # 通过A2A获取决策
+    def parse_xml_decision()              # 解析XML响应
+    
+    # 交易执行
+    def execute_decision()                # 在agent的BacktestAccount中执行
+    def _execute_open_long()              # 开多仓
+    def _execute_close_long()             # 平多仓
+    
+    # 指标计算
+    def calculate_sharpe_ratio()          # 计算夏普比率
+    def calculate_performance()           # 完整评估（13个指标）
+    
+    # LLM评估 ⭐ 新增（参考debate judge）
+    async def evaluate_reasoning()        # 使用LLM评估reasoning质量
+    def _build_evaluation_prompt()        # 构建评估prompt
+    def _calculate_reasoning_score()      # 计算reasoning综合分数
+    
+    # 多轮交互
+    def store_round_decision()            # 存储agent的该轮决策
+    def create_disclosure_package()       # 创建披露包（在Day 7/14/21）
+    def format_intelligence_report()      # 格式化对手情报（添加到prompt）
+    def _parse_reasoning_structure()      # 从reasoning中提取market_view等
+    def _get_current_leaderboard()        # 生成当前排行榜
+```
+
+**持仓读取流程：**
+```python
+def _read_agent_positions(self, agent_name: str) -> List[Position]:
+    """读取agent的当前持仓"""
+    account = self.accounts[agent_name]  # 获取该agent的独立账户
+    positions = account.get_positions()   # 从BacktestAccount读取持仓
+    
+    # 返回持仓列表，可能为空
+    return positions
+
+# 在build_market_prompt中使用：
+positions = self._read_agent_positions(agent_name)
+if positions:
+    prompt += "## 当前持仓\n"
+    for i, pos in enumerate(positions, 1):
+        prompt += self._format_position(pos, i, current_prices)
+else:
+    prompt += "## 当前持仓\n无持仓\n"
+```
+
+**候选币种提供流程：**
+```python
+def _get_candidate_symbols(self) -> List[str]:
+    """获取候选币种列表（从配置）"""
+    return self.config['symbols']  # ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+# 在build_market_prompt中使用：
+prompt += "\n## 候选币种\n"
+for symbol in self._get_candidate_symbols():
+    symbol_data = self.historical_data[symbol].iloc[:current_day+1]
+    prompt += self._format_candidate(symbol, symbol_data)
+```
+
+---
+
+## 🔄 多轮交互机制（核心特性）
+
+### 为什么需要多轮交互？
+
+**问题**：简单的单向交互（Green发数据 → White返回决策）缺少策略博弈深度
+**解决**：引入披露点机制，让agents能够分析对手、调整策略
+
+### 交互时间线（基于4小时周期）
+
+```
+├─ 决策#1-42 (Day 1-7): Round 1 【盲交易期】
+│  ├─ 42次独立决策（7天 × 6次/天）
+│  ├─ Agents只看到：市场数据 + 自己的账户
+│  ├─ 无对手信息
+│  └─ Green记录所有reasoning（暂不披露）
+│
+├─ 决策#42 (Day 7 00:00): 📢 披露点1
+│  └─ 公开所有agents的：
+│     ├─ Round 1的42次reasoning和市场观点
+│     ├─ 当前持仓明细
+│     ├─ 当前PnL排名
+│     └─ 执行的所有动作
+│
+├─ 决策#43-84 (Day 8-14): Round 2 【情报交易期】
+│  ├─ 42次决策（带情报）
+│  ├─ Agents收到：
+│  │  ├─ 市场数据
+│  │  ├─ 自己的账户
+│  │  └─ 📊 披露点1的完整情报 ⭐
+│  └─ Agents可以：
+│     ├─ 分析对手reasoning质量（42次历史）
+│     ├─ 判断谁的策略有效
+│     └─ 决定跟随/对抗/独立
+│
+├─ 决策#84 (Day 14 00:00): 📢 披露点2
+│  └─ 公开Round 2信息（包含对手分析）
+│
+├─ 决策#85-126 (Day 15-21): Round 3 【深度博弈期】
+│  ├─ 42次决策
+│  └─ Agents基于披露1+2进行多步推理
+│
+├─ 决策#126 (Day 21 00:00): 📢 披露点3
+│  └─ 最终披露
+│
+└─ 决策#127-180 (Day 22-30): Round 4 【终局期】
+   ├─ 54次决策
+   └─ 基于所有历史情报的最终对决
+
+总计：180次AI决策 / agent，共900次决策（5个agents）
+```
+
+### 配置参数
+
+```toml
+[scenario.config]
+# 基础配置
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+start_date = "2024-11-14"
+end_date = "2024-12-14"
+timeframe = "4h"                                 # 决策周期：4小时
+total_days = 30
+initial_balance = 10000.0
+
+# 决策频率
+decisions_per_day = 6                            # 24h / 4h = 6次/天
+total_decision_cycles = 180                      # 30天 × 6次 = 180次
+
+# 多轮交互配置 ⭐ 新增
+enable_multi_round = true                        # 是否启用多轮交互
+num_disclosure_rounds = 3                        # 披露次数
+disclosure_cycles = [42, 84, 126]                # 哪些决策周期进行披露
+disclosure_days = [7, 14, 21]                    # 对应的天数（可读性）
+disclosure_content = [                           # 披露内容
+    "reasoning",      # 对手的市场分析和推理
+    "positions",      # 对手的持仓
+    "pnl",            # 对手的盈亏
+    "actions"         # 对手执行的动作
+]
+```
+
+### 披露数据格式
+
+**决策#42 (Day 7 00:00) 披露点示例：**
+
+```
+========================================
+📢 DISCLOSURE POINT 1 - 决策#42 (Day 7 00:00)
+Round 1 完成：42次决策
+========================================
+
+排名:
+  👑 MomentumTrader: +15.2% ($11,520)
+  2. BalancedTrader: +8.7% ($10,870)
+  3. ConservativeTrader: +5.1% ($10,510)
+  4. AggressiveTrader: +2.3% ($10,230)
+  5. MeanReversionTrader: -3.2% ($9,680)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+MomentumTrader的Round 1表现 (42次决策):
+
+决策#8 (Day 2 08:00):
+  市场观点: "BTC突破$87k阻力位，成交量放大，趋势确立"
+  风险评估: "中等风险，止损$85k"
+  动作: 开多仓 BTC 0.3 @ $87,234 (5x杠杆)
+  推理: "MACD金叉，EMA20上穿，RSI未超买，符合趋势跟随信号"
+
+决策#23 (Day 4 16:00):
+  市场观点: "趋势延续，回踩支撑后继续上涨"
+  动作: 加仓 BTC 0.2 @ $88,789
+  推理: "价格回踩EMA20获得支撑，成交量未减，继续看涨"
+  
+[... 其他40次决策摘要 ...]
+
+当前持仓:
+  - BTC 0.5 Long @ avg $87,876 (未实现PnL: +$614)
+
+总结: 成功判断趋势，执行果断 ✅
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+MeanReversionTrader的Round 1表现 (42次决策):
+
+决策#14 (Day 3 04:00):
+  市场观点: "BTC RSI达到70，超买，预期回调"
+  动作: 开空仓 BTC 0.4 @ $88,543 (3x杠杆)
+  推理: "RSI超买信号，预期回调至$86k"
+
+决策#32 (Day 6 00:00):
+  市场观点: "继续超买，加大空仓"
+  动作: 加空仓 BTC 0.3 @ $89,012
+  推理: "RSI持续高位，回调即将到来"
+  
+[... 其他40次决策摘要 ...]
+
+当前持仓:
+  - BTC 0.7 Short @ avg $88,732 (未实现PnL: -$261)
+
+总结: 逆势操作，判断失误 ❌
+
+========================================
+```
+
+### White Agent如何使用披露信息
+
+**Round 2时（决策#43开始），BalancedTrader收到的prompt会包含：**
+
+```
+时间: 2024-11-15 04:00 | 决策周期: #43 | Round 2
+
+[... 当前4小时K线的市场数据 ...]
+[... 你的账户状态 ...]
+[... 候选币种（BTC/ETH/SOL） ...]
+
+========================================
+对手情报 (INTELLIGENCE REPORT)
+========================================
+
+【披露点1 - 决策#42 (Day 7 00:00)】
+
+排名:
+  👑 MomentumTrader: +15.2%
+  2. BalancedTrader: +8.7% (你)
+  3. ConservativeTrader: +5.1%
+
+对手分析:
+
+MomentumTrader:
+  Round 1决策数: 42次，其中8次开仓/加仓，34次hold
+  关键市场观点: "BTC趋势确立，成交量支持"
+  执行动作: 决策#8开多0.3 BTC, 决策#23加仓0.2 BTC
+  当时持仓: BTC 0.5 Long @ $87,876
+  Round 1 PnL: +15.2%
+  
+ConservativeTrader:
+  Round 1决策数: 42次，其中3次开仓，39次wait/hold
+  关键市场观点: "BTC突破但保持观望，等待确认"
+  执行动作: 决策#20小仓位开多0.1 BTC
+  当时持仓: BTC 0.1 Long @ $88,234
+  Round 1 PnL: +5.1%
+
+MeanReversionTrader:
+  Round 1决策数: 42次，其中6次逆势操作
+  关键市场观点: "RSI超买，预期回调"
+  执行动作: 决策#14开空0.4 BTC, 决策#32加空0.3 BTC
+  当时持仓: BTC 0.7 Short @ $88,732
+  Round 1 PnL: -3.2%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+基于以上情报，你现在可以：
+1. 评估对手的reasoning质量
+2. 判断谁的策略有效
+3. 决定你的策略调整
+
+请在<reasoning>中包含<opponent_analysis>部分。
+```
+
+**BalancedTrader的Round 2决策可能是：**
+
+```xml
+<summary>
+基于MomentumTrader的成功案例，增加BTC暴露，开多仓
+</summary>
+
+<reasoning>
+市场分析: BTC继续强势，突破$89k
+
+对手分析:
+- MomentumTrader: 他的趋势判断完全正确(+15.2%)，
+  reasoning质量高("成交量确认"这个逻辑很扎实)
+  他可能会继续持有或加仓
+  
+- MeanReversionTrader: 他的逆向策略失败(-3.2%)，
+  说明当前市场趋势性强，不适合逆向
+  他可能被迫止损
+  
+- ConservativeTrader: 太保守，错过了大部分涨幅
+
+策略调整:
+我在Round 1过于谨慎，现在明确趋势向上。
+参考MomentumTrader的成功经验，我应该增加BTC仓位。
+但避免像他那样激进，使用3x杠杆而非5x。
+
+最终决策: 开多仓BTC，杠杆3x，仓位价值$2000
+</reasoning>
+
+<decision>
+[
+  {
+    "symbol": "BTCUSDT",
+    "action": "open_long",
+    "leverage": 3,
+    "quantity": 0.067,
+    "stop_loss": 86000,
+    "take_profit": 92000,
+    "confidence": 0.75,
+    "risk_usd": 200,
+    "reasoning": "跟随MomentumTrader的成功策略，但降低杠杆"
+  }
+]
+</decision>
+```
+
+---
+
+### 2. White Agents (Trading Agents)
+
+**5种策略：**
+
+| 策略 | 杠杆 | 频率 | 风格 | 预期表现 |
+|------|------|------|------|----------|
+| Conservative | 1-3x | 低 (0.4/天) | 资本保护 | 稳健，低收益 |
+| Balanced | 3-5x | 中 (0.6/天) | 理性分析 | 最优风险调整收益 |
+| Aggressive | 5-20x | 高 (1.5/天) | 高风险高回报 | 高收益但波动大 |
+| Momentum | 3-8x | 中高 (0.9/天) | 趋势跟随 | 牛市表现优秀 |
+| MeanReversion | 2-5x | 高 (1.1/天) | 逆势交易 | 趋势市场表现差 |
+
+**决策流程（Decision Process）：**
+
+每个White Agent在收到market prompt后，必须按照以下流程进行决策：
+
+```
+📋 DECISION PROCESS (必须遵循)
+
+Step 1: 检查现有持仓 (Check Positions)
+   ├─ 遍历当前持仓列表
+   ├─ 检查每个持仓的盈亏情况
+   ├─ 判断是否触发止盈条件：
+   │  └─ 盈利达到目标 or 回撤超过阈值 → 考虑平仓
+   ├─ 判断是否触发止损条件：
+   │  └─ 亏损达到止损点 or 趋势反转 → 必须平仓
+   └─ 输出: 对现有持仓的操作决策
+
+Step 2: 扫描候选币种 (Scan Candidates)
+   ├─ 遍历所有候选币种（BTC/ETH/SOL）
+   ├─ 多时间框架分析：
+   │  ├─ 4小时级别: 判断主趋势方向
+   │  └─ 3分钟级别: 寻找入场时机
+   ├─ 检查是否存在强信号：
+   │  ├─ 趋势信号: EMA交叉、MACD金叉/死叉
+   │  ├─ 动量信号: RSI突破、成交量确认
+   │  └─ 形态信号: 突破关键价位
+   └─ 输出: 潜在的新开仓机会
+
+Step 3: 风险评估 (Risk Assessment)
+   ├─ 当前账户风险敞口
+   ├─ 新开仓是否会导致过度杠杆
+   ├─ 市场波动率评估
+   └─ 输出: 是否允许新开仓
+
+Step 4: 综合决策 (Final Decision)
+   ├─ 优先级1: 处理现有持仓（止盈/止损）
+   ├─ 优先级2: 开新仓位（如果风险允许）
+   ├─ 优先级3: 持有或等待（如果无明确信号）
+   └─ 输出: 最终动作列表
+
+Step 5: 结构化输出 (Structured Output)
+   ├─ 先写 <summary>: 一句话总结决策
+   ├─ 再写 <reasoning>: 完整的思维链
+   │  ├─ 当前持仓分析（Step 1）
+   │  ├─ 候选币扫描结果（Step 2）
+   │  ├─ 风险评估（Step 3）
+   │  ├─ 对手分析（Round 2+）
+   │  └─ 最终决策逻辑（Step 4）
+   └─ 最后写 <decision>: JSON格式的动作
+```
+
+**输出格式（XML）- 遵循Decision Process：**
+
+```xml
+<summary>
+BTC持仓盈利+5.2%达止盈目标，平仓获利；ETH出现多头信号，开仓做多
+</summary>
+
+<reasoning>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Step 1: 检查现有持仓 (Check Positions)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+当前持仓1个：
+- BTC Long: 入场价$87,234, 当前价$91,768, 盈利+5.2% (+$453 USDT)
+  
+持仓分析：
+✓ 盈利已达到预期目标（设定4-6%）
+✓ 短期3分钟EMA开始走平，上涨动能减弱
+✓ RSI7达到72，进入超买区域
+✓ 决策：平仓止盈，锁定利润
+
+invalidation_condition: 如果价格突破$93,000并放量，则不平仓
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Step 2: 扫描候选币种 (Scan Candidates)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BTCUSDT:
+- 4H趋势：上涨但接近超买
+- 3M波动：最近80根K线显示震荡
+- 信号强度：中性，暂时观望
+- 结论：刚平仓，等待回调
+
+ETHUSDT:
+- 4H趋势：刚突破EMA50，趋势转多 ⭐
+- 3M波动：最近20根K线持续放量上涨
+- 技术信号：
+  * MACD 4H金叉（0.15 > Signal 0.08）
+  * EMA20上穿EMA50（3142 > 3100）
+  * RSI7=58（未超买，有空间）
+  * 成交量：当前15.2M > 平均12.5M (+21.6%)
+- 信号强度：强 ✅
+- 结论：存在明确做多机会
+
+SOLUSDT:
+- 4H趋势：震荡，无明确方向
+- 信号强度：弱
+- 结论：观望
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Step 3: 风险评估 (Risk Assessment)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+当前账户状态：
+- 净值：$10,453 (BTC平仓后)
+- 可用余额：$10,453
+- 当前持仓：0
+- 风险敞口：0%
+
+ETH开仓风险计算：
+- 计划仓位：$2,000 (20%资金)
+- 杠杆：3x
+- 止损：$3,000 (-4.5%)
+- 最大亏损：$2,000 × 3 × 4.5% = $270 (2.6%资金)
+- 风险评估：✅ 可接受（单笔风险<3%）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Step 4: 综合决策 (Final Decision)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+优先级1 - 处理现有持仓：
+✅ 平仓BTC (+5.2%, $453利润)
+
+优先级2 - 开新仓位：
+✅ 开多ETH (信号强，风险可控)
+
+优先级3 - 持有/等待：
+- SOL暂时观望
+
+最终执行：
+1. close_long BTC
+2. open_long ETH
+
+</reasoning>
+
+<decision>
+[
+  {
+    "symbol": "BTCUSDT",
+    "action": "close_long",
+    "leverage": 1,
+    "quantity": 0.5,
+    "stop_loss": 0,
+    "take_profit": 0,
+    "confidence": 0.9,
+    "risk_usd": 0,
+    "reasoning": "止盈平仓，锁定+5.2%利润"
+  },
+  {
+    "symbol": "ETHUSDT",
+    "action": "open_long",
+    "leverage": 3,
+    "quantity": 0.19,
+    "stop_loss": 3000,
+    "take_profit": 3300,
+    "confidence": 0.75,
+    "risk_usd": 270,
+    "reasoning": "4H趋势转多，MACD金叉，成交量确认"
+  }
+]
+</decision>
+```
+
+---
+
+## 📨 市场Prompt格式详解
+
+Green Agent在每个交易周期会为每个White Agent构建个性化的市场prompt，包含：
+
+### 0. System Prompt（基础指令）
+
+Green Agent会在每次发送给White Agent的prompt中包含system prompt，明确决策流程：
+
+```
+你是专业的加密货币交易AI，在合约市场进行自主交易。
+
+# 核心目标
+最大化夏普比率（Sharpe Ratio）
+夏普比率 = 平均收益 / 收益波动率
+
+这意味着：
+- 高质量交易（高胜率、大盈亏比）→ 提升夏普
+- 稳定收益、控制回撤 → 提升夏普
+- 耐心持仓、让利润奔跑 → 提升夏普
+- 频繁交易、小盈小亏 → 增加波动，严重降低夏普
+
+关键认知：系统每4小时决策一次，但不意味着每次都要交易！
+大多数时候应该是 `wait` 或 `hold`，只在极佳机会时才开仓。
+
+# 📋 决策流程（DECISION PROCESS - 必须严格遵循）
+
+Step 1: 检查现有持仓 (Check Positions)
+   - 遍历当前持仓列表
+   - 检查每个持仓的盈亏情况
+   - 判断是否触发止盈：盈利达到目标 or 回撤超过阈值
+   - 判断是否触发止损：亏损达到止损点 or 趋势反转
+   - 输出：对现有持仓的操作决策
+
+Step 2: 扫描候选币种 (Scan Candidates + Multi-Timeframe)
+   - 遍历所有候选币种（BTC/ETH/SOL）
+   - 多时间框架分析：
+     * 4小时级别：判断主趋势方向
+     * 3分钟级别：寻找入场时机
+   - 检查是否存在强信号：
+     * 趋势信号：EMA交叉、MACD金叉/死叉
+     * 动量信号：RSI突破、成交量确认
+     * 形态信号：突破关键价位
+   - 输出：潜在的新开仓机会
+
+Step 3: 风险评估 (Risk Assessment)
+   - 当前账户风险敞口
+   - 新开仓是否会导致过度杠杆
+   - 市场波动率评估（ATR）
+   - 输出：是否允许新开仓
+
+Step 4: 综合决策 (Final Decision)
+   - 优先级1：处理现有持仓（止盈/止损）
+   - 优先级2：开新仓位（如果风险允许）
+   - 优先级3：持有或等待（如果无明确信号）
+   - 输出：最终动作列表
+
+Step 5: 结构化输出 (Write Chain of Thought First, Then JSON)
+   - 先写 <summary>：一句话总结决策
+   - 再写 <reasoning>：完整的思维链（必须包含Step 1-4的分析）
+   - 最后写 <decision>：JSON格式的动作
+
+# 输出格式（严格遵守）
+
+<summary>
+一句话总结你的决策和理由
+</summary>
+
+<reasoning>
+━━━ Step 1: 检查现有持仓 ━━━
+[分析每个持仓，决定是否止盈/止损]
+
+━━━ Step 2: 扫描候选币种 ━━━
+[多时间框架分析，寻找强信号]
+
+━━━ Step 3: 风险评估 ━━━
+[评估账户风险，判断是否可开新仓]
+
+━━━ Step 4: 综合决策 ━━━
+[最终决策逻辑]
+
+[Round 2+还需包含：对手分析、策略调整]
+</reasoning>
+
+<decision>
+[JSON数组，包含所有动作]
+</decision>
+
+现在，分析以下市场数据并做出决策：
+```
+
+---
+
+### 1. 账户状态读取
+
+```python
+# Green Agent从BacktestAccount读取该agent的状态
+account = self.accounts[agent_name]  # 每个agent有独立账户
+
+账户信息:
+├─ 现金余额: account.cash
+├─ 持仓列表: account.positions (dict)
+├─ 总净值: account.total_equity(current_prices)
+└─ 盈亏百分比: (净值 - 初始资金) / 初始资金 × 100%
+```
+
+### 2. 持仓信息格式化
+
+```
+## 当前持仓
+
+1. BTCUSDT LONG | 入场价87234.50 当前价89105.20 | 数量0.05 | 仓位价值4455.26 USDT | 盈亏+2.15% | 盈亏金额+93.53 USDT | 杠杆5x | 强平价69787.60
+
+current_price = 89105.20, current_ema20 = 88500.30, current_macd = 0.2541, current_rsi (7 period) = 65.23
+
+Intraday series (最近10个周期, 旧→新):
+Mid prices: [87234.50, 87456.20, 88012.30, 88543.10, 88234.50, 88789.20, 89012.40, 88965.30, 89023.10, 89105.20]
+EMA indicators (20-period): [87123.45, 87345.67, 87654.32, 87932.10, 88123.45, 88345.67, 88567.89, 88712.34, 88834.56, 88500.30]
+MACD indicators: [0.1234, 0.1456, 0.1789, 0.2012, 0.2234, 0.2345, 0.2456, 0.2512, 0.2534, 0.2541]
+RSI indicators (7-Period): [58.23, 59.45, 61.23, 63.45, 64.12, 64.89, 65.01, 65.12, 65.18, 65.23]
+RSI indicators (14-Period): [55.67, 56.89, 58.23, 59.45, 60.12, 60.78, 61.23, 61.45, 61.67, 61.89]
+Volume: [1523456, 1634567, 1745678, 1856789, 1967890, 2078901, 2189012, 2290123, 2301234, 2412345]
+ATR (14-period): 1234.56
+```
+
+**关键点：**
+- ✅ Green Agent从agent的BacktestAccount读取持仓
+- ✅ 包含未实现盈亏计算
+- ✅ 包含该持仓币种的完整技术指标
+- ✅ 如果无持仓，显示"无持仓"
+
+### 3. 候选币种提供
+
+```
+## 候选币种 (3个)
+
+### 1. BTCUSDT
+current_price = 89105.20, current_ema20 = 88500.30, current_macd = 0.2541, current_rsi (7 period) = 65.23
+
+Intraday series (最近10个周期):
+Mid prices: [87234.50, 87456.20, 88012.30, 88543.10, 88234.50, 88789.20, 89012.40, 88965.30, 89023.10, 89105.20]
+EMA indicators (20-period): [87123.45, 87345.67, ...]
+MACD indicators: [0.1234, 0.1456, ...]
+RSI indicators (7-Period): [58.23, 59.45, ...]
+RSI indicators (14-Period): [55.67, 56.89, ...]
+Volume: [1523456, 1634567, ...]
+ATR (14-period): 1234.56
+
+### 2. ETHUSDT
+current_price = 3142.50, current_ema20 = 3100.20, current_macd = 0.1523, current_rsi (7 period) = 58.45
+
+Intraday series (最近10个周期):
+Mid prices: [3089.20, 3095.40, 3102.30, 3108.50, 3115.20, 3120.40, 3128.60, 3135.80, 3139.20, 3142.50]
+[... 完整技术指标 ...]
+
+### 3. SOLUSDT
+current_price = 218.45, current_ema20 = 215.30, current_macd = -0.0523, current_rsi (7 period) = 48.23
+
+Intraday series (最近10个周期):
+Mid prices: [215.20, 215.80, 216.30, 216.90, 217.20, 217.80, 218.10, 218.25, 218.35, 218.45]
+[... 完整技术指标 ...]
+```
+
+**候选币种配置：**
+- 在 `scenario.toml` 中定义：`symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]`
+- Green Agent加载所有候选币种的历史数据
+- 每个周期提供所有候选币的完整技术指标
+- White Agents可以选择任意候选币进行交易
+
+### 4. 完整Prompt示例
+
+**Day 5时，ConservativeTrader收到的完整prompt：**
+
+```
+时间: Day 5 | 周期: #5 | 运行: 5天
+
+BTC: 89105.20 (1h: +1.2%, 4h: +2.8%) | MACD: 0.2541 | RSI: 65.23
+
+账户: 净值9893.45 | 余额9800.00 (99.1%) | 盈亏-1.07% | 持仓1个
+
+## 当前持仓 ⭐ 读取该Agent的BacktestAccount
+
+1. BTCUSDT LONG | 入场价87234.50 当前价89105.20 | 数量0.05 | 仓位价值4455.26 USDT | 盈亏+2.15% | 盈亏金额+93.53 USDT | 杠杆5x | 保证金891.05 | 强平价69787.60 | 持仓时长3天
+
+current_price = 89105.20, current_ema20 = 88500.30, current_macd = 0.2541, current_rsi (7 period) = 65.23
+
+Intraday series (最近10个周期, 旧→新):
+Mid prices: [87234.50, 87456.20, 88012.30, 88543.10, 88234.50, 88789.20, 89012.40, 88965.30, 89023.10, 89105.20]
+EMA indicators (20-period): [87123.45, 87345.67, 87654.32, 87932.10, 88123.45, 88345.67, 88567.89, 88712.34, 88834.56, 88500.30]
+MACD indicators: [0.1234, 0.1456, 0.1789, 0.2012, 0.2234, 0.2345, 0.2456, 0.2512, 0.2534, 0.2541]
+RSI indicators (7-Period): [58.23, 59.45, 61.23, 63.45, 64.12, 64.89, 65.01, 65.12, 65.18, 65.23]
+RSI indicators (14-Period): [55.67, 56.89, 58.23, 59.45, 60.12, 60.78, 61.23, 61.45, 61.67, 61.89]
+Volume: [1523456, 1634567, 1745678, 1856789, 1967890, 2078901, 2189012, 2290123, 2301234, 2412345]
+ATR (14-period): 1234.56
+
+## 候选币种 (3个) ⭐ 提供所有可交易币种
+
+### 1. BTCUSDT
+current_price = 89105.20, current_ema20 = 88500.30, current_macd = 0.2541, current_rsi (7 period) = 65.23
+
+Intraday series (最近10个周期):
+Mid prices: [87234.50, 87456.20, 88012.30, 88543.10, 88234.50, 88789.20, 89012.40, 88965.30, 89023.10, 89105.20]
+[... 完整指标 ...]
+
+### 2. ETHUSDT
+current_price = 3142.50, current_ema20 = 3100.20, current_macd = 0.1523, current_rsi (7 period) = 58.45
+
+Intraday series (最近10个周期):
+Mid prices: [3089.20, 3095.40, 3102.30, 3108.50, 3115.20, 3120.40, 3128.60, 3135.80, 3139.20, 3142.50]
+[... 完整指标 ...]
+
+### 3. SOLUSDT
+current_price = 218.45, current_ema20 = 215.30, current_macd = -0.0523, current_rsi (7 period) = 48.23
+
+Intraday series (最近10个周期):
+Mid prices: [215.20, 215.80, 216.30, 216.90, 217.20, 217.80, 218.10, 218.25, 218.35, 218.45]
+[... 完整指标 ...]
+
+---
+
+基于以上信息，做出你的交易决策。
+```
+
+**ConservativeTrader的决策考虑：**
+- 我有BTC多头持仓（+2.15%盈利）
+- BTC仍在上涨（价格 > EMA20）
+- RSI=65略高但未超买
+- 可选择：持有BTC、加仓BTC、平仓止盈、或开仓其他币种（ETH/SOL）
+
+  
+  3. 并行发送给所有Agents (A2A通信)
+     ConservativeTrader ← Prompt（含其BTC持仓）
+     BalancedTrader ← Prompt（含其账户状态）
+     AggressiveTrader ← Prompt（含其账户状态）
+     MomentumTrader ← Prompt（含其账户状态）
+     MeanReversionTrader ← Prompt（含其账户状态）
+
+```python
+# 1. 交易决策（White Agent输出）
+class TradingAction(BaseModel):
+    symbol: str
+    action: Literal["open_long", "open_short", "close_long", "close_short", "hold", "wait"]
+    leverage: int = 1
+    quantity: float = 0
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    confidence: float = 0.5
+    risk_usd: float = 0
+    reasoning: str
+
+class TradingDecision(BaseModel):
+    summary: str
+    reasoning: str
+    actions: List[TradingAction]
+
+# 2. 多轮交互模型 ⭐ 新增
+class AgentRoundDecision(BaseModel):
+    """单个agent在一个round的完整记录"""
+    agent_name: str
+    day: int
+    round: int
+    
+    # 市场观点（从reasoning中提取）
+    market_view: str              # "BTC突破$90k，趋势强劲"
+    
+    # 对手分析（Round 2+才会有）
+    opponent_analysis: Optional[Dict[str, str]] = None
+    # {"MomentumTrader": "判断正确，可跟随", "MeanReversionTrader": "逆势失败"}
+    
+    # 策略调整（Round 2+才会有）
+    strategy_adjustment: Optional[str] = None
+    # "增加趋势跟随权重，降低杠杆"
+    
+    # 执行的动作
+    actions: List[TradingAction]
+    
+    # 完整的推理过程
+    full_reasoning: str
+
+class DisclosurePackage(BaseModel):
+    """披露点数据包"""
+    round_number: int              # 第几轮 (1, 2, 3)
+    disclosure_day: int            # 第几天 (7, 14, 21)
+    
+    # 排行榜
+    leaderboard: List[Dict]        # [{"rank": 1, "name": "T1", "pnl_pct": 15.2, "equity": 11520}]
+    
+    # 每个agent的该轮表现
+    agents_round_summary: List[Dict]  # 包含reasoning、positions、actions等
+
+class IntelligenceReport(BaseModel):
+    """发送给agent的情报报告"""
+    opponent_name: str
+    current_rank: int
+    current_pnl_pct: float
+    current_positions: str         # "BTC 0.5 Long @ $87,876"
+    
+    # 该对手的历史决策摘要
+    recent_market_views: List[str]     # 最近3次的市场观点
+    recent_actions_summary: str        # "Day 2开多0.3 BTC, Day 5加仓0.2"
+    strategy_pattern: str              # "趋势跟随型，快速响应"
+    success_rate: str                  # "3/5成功" 
+
+# 3. LLM评估模型 ⭐ 新增（参考debate judge）
+class ReasoningEvaluation(BaseModel):
+    """单次决策的reasoning质量评估"""
+    agent_name: str
+    cycle_idx: int
+    timestamp: str
+    
+    # 评估维度（0-1分）
+    decision_process_adherence: float   # Decision Process遵循度
+    # 是否按照Step 1-5的流程分析
+    
+    technical_analysis_accuracy: float  # 技术分析准确性
+    # 技术指标解读是否正确（EMA/MACD/RSI等）
+    
+    risk_assessment_quality: float      # 风险评估合理性
+    # 是否充分评估风险、止损设置是否合理
+    
+    logical_consistency: float          # 逻辑一致性
+    # reasoning和decision是否一致
+    
+    multi_timeframe_quality: float      # 多时间框架分析质量
+    # 4H和3M分析是否都有效利用
+    
+    # 综合评分
+    overall_score: float                # 平均分
+    
+    # LLM评语
+    strengths: str                      # 优点
+    weaknesses: str                     # 不足
+    suggestions: str                    # 改进建议
+
+class AgentReasoningQuality(BaseModel):
+    """Agent的整体reasoning质量（180次决策的平均）"""
+    agent_name: str
+    total_evaluations: int              # 180次
+    
+    # 平均分数
+    avg_decision_process: float
+    avg_technical_analysis: float
+    avg_risk_assessment: float
+    avg_logical_consistency: float
+    avg_multi_timeframe: float
+    
+    # 总体reasoning分数
+    overall_reasoning_score: float      # 平均分
+    
+    # 分布统计
+    excellent_count: int                # >0.8分的决策数
+    good_count: int                     # 0.6-0.8的决策数
+    poor_count: int                     # <0.6的决策数
+
+# 4. 绩效评估（Green Agent输出）
+class AgentPerformance(BaseModel):
+    agent_name: str
+    strategy: str
+    
+    # Return Metrics
+    total_return_pct: float
+    total_return_usd: float
+    cagr: float
+    
+    # Risk Metrics ⭐
+    sharpe_ratio: float           # 核心指标
+    max_drawdown_pct: float
+    volatility: float
+    sortino_ratio: float
+    
+    # Trading Metrics ⭐
+    total_trades: int             # 交易次数
+    win_rate: float
+    profit_factor: float
+    avg_trades_per_day: float
+    
+    # Reasoning Quality ⭐ 新增
+    reasoning_quality: AgentReasoningQuality
+    
+    # Scoring (0-1)
+    profitability_score: float
+    risk_management_score: float
+    consistency_score: float
+    efficiency_score: float
+    robustness_score: float
+    reasoning_score: float        # ⭐ 新增：reasoning质量分数
+    
+    # 最终得分 ⭐ 修改权重
+    total_score: float            # 交易绩效(70%) + Reasoning质量(30%)
+```
+
+---
+
+## 🤖 LLM评估Reasoning质量（参考Debate Judge）
+
+### 为什么需要LLM评估？
+
+**问题**：纯计算指标（Sharpe、回撤等）只能评估**结果**，无法评估**过程**
+- ❌ 无法判断决策推理是否合理
+- ❌ 无法识别"运气好"vs"分析准"
+- ❌ 无法评估Decision Process的执行质量
+- ❌ 无法给出改进建议
+
+**解决**：引入LLM作为Judge，评估每次决策的reasoning质量
+
+### 评估维度（参考Debate Judge的4维度评分）
+
+类似Debate Judge评估"Emotional Appeal, Clarity, Logic, Relevance"，我们评估：
+
+```python
+class ReasoningEvaluation(BaseModel):
+    """每次决策的reasoning质量评估（0-1分）"""
+    
+    # 1. Decision Process遵循度（0-1）
+    decision_process_adherence: float
+    # - 是否按Step 1-5分析？
+    # - 是否先检查持仓，再扫描候选币？
+    # - 是否包含风险评估？
+    
+    # 2. 技术分析准确性（0-1）
+    technical_analysis_accuracy: float
+    # - EMA/MACD/RSI解读是否正确？
+    # - 是否正确判断趋势？
+    # - 是否有效利用3分钟和4小时数据？
+    
+    # 3. 风险评估合理性（0-1）
+    risk_assessment_quality: float
+    # - 杠杆选择是否合理？
+    # - 止损位置是否合理？
+    # - 仓位大小是否匹配风险？
+    
+    # 4. 逻辑一致性（0-1）
+    logical_consistency: float
+    # - reasoning和decision是否一致？
+    # - 结论是否从分析中合理推导？
+    # - 是否有自相矛盾？
+    
+    # 5. 多时间框架分析质量（0-1）
+    multi_timeframe_quality: float
+    # - 4H趋势判断是否准确？
+    # - 3M入场时机选择是否合理？
+    # - 两个时间框架是否协同？
+    
+    # 综合分数
+    overall_score: float  # 5个维度的平均值
+    
+    # LLM评语
+    strengths: str       # "技术分析扎实，风险控制严格"
+    weaknesses: str      # "未充分利用3分钟数据"
+    suggestions: str     # "建议加强对成交量的关注"
+```
+
+### LLM评估Prompt设计
+
+```python
+async def evaluate_reasoning(
+    self,
+    agent_name: str,
+    decision: TradingDecision,
+    market_context: Dict,
+    cycle_idx: int
+) -> ReasoningEvaluation:
+    """使用LLM评估reasoning质量（类似debate judge）"""
+    
+    system_prompt = """
+你是一位经验丰富的交易导师和评审，负责评估AI交易agent的决策reasoning质量。
+
+你将基于5个维度对reasoning进行评分（每个维度0-1分）：
+
+1. **Decision Process Adherence（决策流程遵循度）**
+   - 是否按照规定的5步流程分析？
+     * Step 1: 检查现有持仓
+     * Step 2: 扫描候选币种（多时间框架）
+     * Step 3: 风险评估
+     * Step 4: 综合决策
+     * Step 5: 结构化输出
+   - 0分：完全没有结构，随意分析
+   - 1分：严格按照流程，每一步都清晰
+
+2. **Technical Analysis Accuracy（技术分析准确性）**
+   - 技术指标解读是否正确？（EMA, MACD, RSI, ATR等）
+   - 趋势判断是否合理？
+   - 是否有效利用了4小时和3分钟数据？
+   - 0分：技术分析完全错误或缺失
+   - 1分：技术分析精准，指标运用得当
+
+3. **Risk Assessment Quality（风险评估合理性）**
+   - 杠杆选择是否适合当前市场和策略？
+   - 止损位置是否合理？
+   - 仓位大小是否匹配风险承受能力？
+   - 是否考虑了账户整体风险敞口？
+   - 0分：无风险评估或风险管理混乱
+   - 1分：风险评估全面，参数设置合理
+
+4. **Logical Consistency（逻辑一致性）**
+   - reasoning中的分析和最终decision是否一致？
+   - 结论是否从分析中合理推导？
+   - 是否有自相矛盾之处？
+   - 0分：逻辑混乱，前后矛盾
+   - 1分：逻辑严密，推导合理
+
+5. **Multi-Timeframe Analysis Quality（多时间框架分析质量）**
+   - 4小时级别的趋势判断是否准确？
+   - 3分钟级别的入场时机选择是否合理？
+   - 两个时间框架是否有效协同？
+   - 0分：只看一个时间框架或两者冲突
+   - 1分：多时间框架完美配合
+
+输出JSON格式，包含：
+- 5个维度的分数
+- overall_score（5个维度的平均值）
+- strengths（优点）
+- weaknesses（不足）
+- suggestions（改进建议）
+"""
+
+    user_prompt = f"""
+请评估以下trading agent的决策reasoning质量：
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Agent信息
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Agent名称：{agent_name}
+决策周期：#{cycle_idx}
+时间：{market_context['timestamp']}
+策略：{market_context['strategy']}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+市场上下文
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{self._format_market_context(market_context)}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Agent的Reasoning
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{decision.reasoning}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Agent的Decision
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{json.dumps([a.dict() for a in decision.actions], indent=2)}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+基于以上信息，请对该agent的reasoning质量进行全面评估。
+"""
+
+    # 使用Gemini API评估（类似debate judge）
+    response = self._client.models.generate_content(
+        model="gemini-2.0-flash-exp",
+        config=genai.types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            response_mime_type="application/json",
+            response_schema=ReasoningEvaluation,
+        ),
+        contents=user_prompt,
+    )
+    
+    evaluation = response.parsed
+    
+    # 记录评估结果
+    logger.info(f"Reasoning Evaluation for {agent_name} (cycle #{cycle_idx}):")
+    logger.info(f"  Overall Score: {evaluation.overall_score:.2f}")
+    logger.info(f"  Strengths: {evaluation.strengths}")
+    logger.info(f"  Weaknesses: {evaluation.weaknesses}")
+    
+    return evaluation
+```
+
+### 在主循环中集成LLM评估
+
+```python
+async def run_competition(self):
+    """主竞赛循环：180个决策周期"""
+    
+    all_evaluations: Dict[str, List[ReasoningEvaluation]] = {
+        agent: [] for agent in self.agent_names
+    }
+    
+    for cycle_idx, timestamp in enumerate(timestamps, 1):
+        print(f"\n决策周期 #{cycle_idx}/180")
+        
+        for agent_name in self.agent_names:
+            # 1. 构建prompt
+            prompt = self.build_market_prompt(agent_name, cycle_idx, timestamp)
+            
+            # 2. 获取agent决策
+            decision = await self.get_agent_decision(agent_name, prompt)
+            
+            # 3. ⭐ LLM评估reasoning质量
+            market_context = {
+                'timestamp': timestamp,
+                'strategy': self.agent_strategies[agent_name],
+                'current_price': self.current_prices,
+                'account_state': self.accounts[agent_name].get_state()
+            }
+            evaluation = await self.evaluate_reasoning(
+                agent_name, decision, market_context, cycle_idx
+            )
+            all_evaluations[agent_name].append(evaluation)
+            
+            # 4. 存储决策
+            self.store_round_decision(agent_name, cycle_idx, decision)
+            
+            # 5. 执行交易
+            self.execute_decision(agent_name, decision, timestamp)
+    
+    # 竞赛结束后，计算整体reasoning质量
+    for agent_name in self.agent_names:
+        reasoning_quality = self._calculate_overall_reasoning_quality(
+            all_evaluations[agent_name]
+        )
+        # 保存到agent的performance中
+        self.agent_performances[agent_name].reasoning_quality = reasoning_quality
+```
+
+### 最终评分公式（新增reasoning权重）
+
+```python
+def calculate_final_score(self, performance: AgentPerformance) -> float:
+    """计算最终得分：交易绩效(70%) + Reasoning质量(30%)"""
+    
+    # 交易绩效分数（原有5个维度）
+    trading_score = (
+        performance.profitability_score * 0.25 +        # 盈利能力 25%
+        performance.risk_management_score * 0.25 +      # 风险管理 25%
+        performance.consistency_score * 0.20 +          # 一致性 20%
+        performance.efficiency_score * 0.20 +           # 效率(Sharpe) 20%
+        performance.robustness_score * 0.10             # 稳健性 10%
+    )  # = 1.0
+    
+    # Reasoning质量分数（新增）
+    reasoning_score = performance.reasoning_quality.overall_reasoning_score
+    
+    # 最终得分：70% 交易绩效 + 30% Reasoning质量
+    final_score = trading_score * 0.7 + reasoning_score * 0.3
+    
+    return final_score
+
+# 示例：
+# Agent A: 交易绩效0.85, Reasoning质量0.75 → 0.85*0.7 + 0.75*0.3 = 0.82
+# Agent B: 交易绩效0.90, Reasoning质量0.60 → 0.90*0.7 + 0.60*0.3 = 0.81
+# → Agent A胜出（reasoning质量更好）
+```
+
+### 评估频率控制（成本优化）
+
+由于LLM评估有成本，可以控制频率：
+
+```python
+# 选项1：全量评估（180次/agent）
+evaluate_all = True
+
+# 选项2：采样评估（节省成本）
+evaluate_sample_rate = 0.2  # 只评估20%的决策
+# 180 * 0.2 = 36次/agent
+# 5 agents * 36 = 180次LLM调用（而非900次）
+
+# 选项3：关键时刻评估
+evaluate_at_key_moments = True
+# - 每个round的前5次和后5次决策
+# - 开仓/平仓的决策
+# - 披露点前后的决策
+# ≈ 50次/agent
+```
+
+---
+
+## 💻 Green Agent多轮交互核心实现
+
+### 初始化时设置
+
+```python
+class TradingEvaluatorTools:
+    def __init__(self, config: Dict):
+        # ... 原有初始化 ...
+        
+        # 多轮交互配置
+        self.enable_multi_round = config.get('enable_multi_round', False)
+        self.disclosure_days = config.get('disclosure_days', [])  # [7, 14, 21]
+        
+        # 存储数据
+        self.round_decisions: List[AgentRoundDecision] = []
+        self.disclosure_packages: List[DisclosurePackage] = []
+        self.current_round = 0
+```
+
+### 主循环中的关键逻辑
+
+```python
+async def run_competition(self):
+    """主竞赛循环：180个决策周期"""
+    
+    # 生成4小时K线时间戳
+    timestamps = pd.date_range(
+        start=self.config['start_date'],
+        end=self.config['end_date'],
+        freq='4H'  # 4小时频率
+    )
+    
+    for cycle_idx, timestamp in enumerate(timestamps, 1):
+        print(f"\n{'='*60}")
+        print(f"决策周期 #{cycle_idx}/180")
+        print(f"时间: {timestamp} | Round {self.current_round + 1}")
+        print(f"{'='*60}")
+        
+        # 1. 检查是否需要披露（在该周期开始前）
+        if cycle_idx in self.config['disclosure_cycles']:  # [42, 84, 126]
+            disclosure = self.create_disclosure_package(cycle_idx, timestamp)
+            print(f"📢 披露点{len(self.disclosure_packages)} 已创建")
+        
+        # 2. 为每个agent构建prompt（包含历史披露信息）
+        for agent_name in self.agent_names:
+            prompt = self.build_market_prompt(agent_name, cycle_idx, timestamp)
+            
+            # 3. 获取agent决策（A2A通信）
+            decision = await self.get_agent_decision(agent_name, prompt)
+            
+            # 4. 存储该决策（用于后续披露）⭐
+            self.store_round_decision(agent_name, cycle_idx, decision)
+            
+            # 5. 执行交易
+            self.execute_decision(agent_name, decision, timestamp)
+        
+        # 6. 更新该周期状态
+        self.update_cycle_state(cycle_idx, timestamp)
+    
+    print(f"\n🏁 竞赛结束！共完成 {len(timestamps)} 个决策周期")
+```
+
+### 核心方法1: store_round_decision
+
+```python
+def store_round_decision(
+    self,
+    agent_name: str,
+    day: int,
+    decision: TradingDecision
+):
+    """存储agent的决策，用于后续披露"""
+    
+    # 解析reasoning结构
+    parsed = self._parse_reasoning_structure(decision.reasoning)
+    
+    round_decision = AgentRoundDecision(
+        agent_name=agent_name,
+        day=day,
+        round=self.current_round,
+        market_view=parsed.get('market_view', ''),
+        opponent_analysis=parsed.get('opponent_analysis'),
+        strategy_adjustment=parsed.get('strategy_adjustment'),
+        actions=decision.actions,
+        full_reasoning=decision.reasoning
+    )
+    
+    self.round_decisions.append(round_decision)
+
+def _parse_reasoning_structure(self, reasoning: str) -> Dict:
+    """从reasoning文本中提取结构化信息"""
+    result = {}
+    
+    # 提取市场观点（第一段或"市场分析"部分）
+    if "市场分析:" in reasoning:
+        market_section = reasoning.split("市场分析:")[1].split("\n")[0]
+        result['market_view'] = market_section.strip()
+    
+    # 提取对手分析（Round 2+才会有）
+    if "对手分析:" in reasoning:
+        opponent_section = reasoning.split("对手分析:")[1].split("\n\n")[0]
+        # 解析成dict: {agent_name: analysis}
+        result['opponent_analysis'] = self._parse_opponent_section(opponent_section)
+    
+    # 提取策略调整
+    if "策略调整:" in reasoning:
+        strategy_section = reasoning.split("策略调整:")[1].split("\n\n")[0]
+        result['strategy_adjustment'] = strategy_section.strip()
+    
+    return result
+```
+
+### 核心方法2: create_disclosure_package
+
+```python
+def create_disclosure_package(self, day: int) -> DisclosurePackage:
+    """在披露日创建完整的情报包"""
+    
+    self.current_round += 1
+    
+    # 1. 生成排行榜
+    leaderboard = self._get_current_leaderboard()
+    
+    # 2. 汇总每个agent在该round的表现
+    agents_summary = []
+    for agent_name in self.agent_names:
+        # 获取该agent在当前round的所有决策
+        agent_decisions = [
+            d for d in self.round_decisions
+            if d.agent_name == agent_name and d.round == self.current_round - 1
+        ]
+        
+        # 汇总信息
+        summary = {
+            'name': agent_name,
+            'market_views': [d.market_view for d in agent_decisions if d.market_view],
+            'opponent_analysis': agent_decisions[-1].opponent_analysis if agent_decisions and agent_decisions[-1].opponent_analysis else None,
+            'strategy_adjustment': agent_decisions[-1].strategy_adjustment if agent_decisions and agent_decisions[-1].strategy_adjustment else None,
+            'actions_summary': self._summarize_actions(agent_decisions),
+            'positions': self._get_positions_snapshot(agent_name),
+            'pnl_pct': self._calculate_pnl_pct(agent_name),
+            'equity': self.accounts[agent_name].get_total_equity(self.current_prices)
+        }
+        agents_summary.append(summary)
+    
+    # 3. 创建披露包
+    disclosure = DisclosurePackage(
+        round_number=self.current_round,
+        disclosure_day=day,
+        leaderboard=leaderboard,
+        agents_round_summary=agents_summary
+    )
+    
+    self.disclosure_packages.append(disclosure)
+    
+    # 4. 打印披露信息（日志）
+    self._print_disclosure(disclosure)
+    
+    return disclosure
+
+def _get_current_leaderboard(self) -> List[Dict]:
+    """生成当前排行榜"""
+    rankings = []
+    for agent_name in self.agent_names:
+        pnl_pct = self._calculate_pnl_pct(agent_name)
+        equity = self.accounts[agent_name].get_total_equity(self.current_prices)
+        rankings.append({
+            'name': agent_name,
+            'pnl_pct': pnl_pct,
+            'equity': equity
+        })
+    
+    # 按PnL排序
+    rankings.sort(key=lambda x: x['pnl_pct'], reverse=True)
+    
+    # 添加排名
+    for i, r in enumerate(rankings, 1):
+        r['rank'] = i
+    
+    return rankings
+```
+
+### 核心方法3: build_market_prompt (扩展版)
+
+```python
+def build_market_prompt(self, agent_name: str, day: int) -> str:
+    """构建包含对手情报的完整prompt"""
+    
+    # 1. 基础市场数据部分（原有）
+    prompt = self._build_base_market_data(agent_name, day)
+    
+    # 2. 添加对手情报部分（多轮交互）⭐
+    if self.enable_multi_round and self.disclosure_packages:
+        prompt += "\n" + "="*60 + "\n"
+        prompt += "📊 对手情报 (INTELLIGENCE REPORT)\n"
+        prompt += "="*60 + "\n\n"
+        
+        for disclosure in self.disclosure_packages:
+            prompt += f"【披露点{disclosure.round_number} - 第{disclosure.disclosure_day}天】\n\n"
+            
+            # 2.1 排行榜
+            prompt += "当前排名:\n"
+            for rank_data in disclosure.leaderboard:
+                emoji = "👑" if rank_data['rank'] == 1 else f"{rank_data['rank']}."
+                is_you = "(你)" if rank_data['name'] == agent_name else ""
+                prompt += f"  {emoji} {rank_data['name']}{is_you}: {rank_data['pnl_pct']:+.2f}% (${rank_data['equity']:.2f})\n"
+            
+            prompt += "\n"
+            
+            # 2.2 对手详细信息（跳过自己）
+            for agent_summary in disclosure.agents_round_summary:
+                if agent_summary['name'] == agent_name:
+                    continue  # 跳过自己
+                
+                prompt += f"━━ {agent_summary['name']} ━━\n"
+                
+                # 市场观点
+                if agent_summary['market_views']:
+                    prompt += f"  市场观点: {agent_summary['market_views'][-1]}\n"
+                
+                # 对手分析（如果有）
+                if agent_summary.get('opponent_analysis'):
+                    prompt += f"  对手分析: {agent_summary['opponent_analysis']}\n"
+                
+                # 策略调整（如果有）
+                if agent_summary.get('strategy_adjustment'):
+                    prompt += f"  策略调整: {agent_summary['strategy_adjustment']}\n"
+                
+                # 执行动作
+                prompt += f"  执行动作: {agent_summary['actions_summary']}\n"
+                
+                # 持仓
+                prompt += f"  当前持仓: {agent_summary['positions']}\n"
+                
+                # PnL
+                prompt += f"  当前盈亏: {agent_summary['pnl_pct']:+.2f}%\n"
+                
+                prompt += "\n"
+            
+            prompt += "-"*60 + "\n\n"
+        
+        # 2.3 提示agent分析对手
+        prompt += "\n💡 基于以上对手情报，你可以：\n"
+        prompt += "1. 评估对手的reasoning质量和成功率\n"
+        prompt += "2. 判断哪些策略在当前市场有效\n"
+        prompt += "3. 决定跟随、对抗还是保持独立\n"
+        prompt += "4. 在<reasoning>中添加<opponent_analysis>和<strategy_adjustment>部分\n\n"
+    
+    return prompt
+```
+
+---
+
+## 🔢 评估指标详解
+
+### Return Metrics (收益指标)
+- **Total Return %**: (最终净值 - 初始资金) / 初始资金 × 100%
+- **Total Return USD**: 绝对收益金额
+- **CAGR**: (最终净值 / 初始资金)^(365/天数) - 1
+
+### Risk Metrics (风险指标)
+- **Sharpe Ratio**: (平均日收益 / 收益标准差) × √365 ⭐ **核心指标**
+- **Max Drawdown**: (峰值 - 谷底) / 峰值 × 100%
+- **Volatility**: 日收益标准差 × √365
+- **Sortino Ratio**: (平均收益 / 下行标准差) × √365
+- **Calmar Ratio**: CAGR / Max Drawdown
+
+### Trading Metrics (交易指标)
+- **Total Trades**: 完成的交易次数（开+平算2次）⭐
+- **Win Rate**: 盈利交易数 / 总交易数 × 100%
+- **Profit Factor**: 总盈利 / 总亏损
+- **Avg Trades/Day**: 总交易数 / 天数
+- **Avg Holding Time**: 平均持仓小时数
+
+### Scoring Dimensions (评分维度 0-1)
+
+#### A. 交易绩效分数 (Trading Performance) - 70%权重
+
+**1. Profitability (盈利能力) - 25%权重**
+- 计算：min(CAGR / 20%, 1.0)
+- 标准：20%以上CAGR = 满分
+
+**2. Risk Management (风险管理) - 25%权重**
+- 计算：max(1.0 - MaxDD / 20%, 0)
+- 标准：0%回撤 = 满分，20%以上 = 0分
+
+**3. Consistency (一致性) - 20%权重**
+- 计算：(WinRate/80% × 0.5 + ProfitFactor/3.0 × 0.5)
+- 标准：80%胜率+3.0盈亏比 = 满分
+
+**4. Efficiency (效率) - 20%权重** ⭐
+- 计算：min(Sharpe / 2.0, 1.0)
+- 标准：夏普比率2.0以上 = 满分
+
+**5. Robustness (稳健性) - 10%权重**
+- 计算：max(1.0 - Volatility / 30%, 0)
+- 标准：0%波动 = 满分，30%以上 = 0分
+
+**交易绩效得分：**
+```python
+trading_score = (
+    profitability_score * 0.25 +
+    risk_management_score * 0.25 +
+    consistency_score * 0.20 +
+    efficiency_score * 0.20 +
+    robustness_score * 0.10
+)  # 满分1.0
+```
+
+#### B. Reasoning质量分数 (Reasoning Quality) - 30%权重 ⭐ 新增
+
+**6. Reasoning综合评分** - 基于LLM评估180次决策
+- 由LLM judge评估每次reasoning的5个维度
+- 取180次评估的平均分
+- 详见"LLM评估Reasoning质量"章节
+
+**最终得分 = 交易绩效(70%) + Reasoning质量(30%)**
+```python
+final_score = trading_score * 0.70 + reasoning_score * 0.30
+```
+
+---
+
+## 🔄 完整交互流程
+
+### Phase 1: 初始化
+
+```
+Green Agent启动
+├─ 从Binance API获取历史数据
+│  ├─ BTCUSDT: 2024-11-14 至 2024-12-14
+│  ├─ ETHUSDT: 2024-11-14 至 2024-12-14
+│  └─ SOLUSDT: 2024-11-14 至 2024-12-14
+│
+├─ 计算技术指标
+│  ├─ EMA20, EMA50
+│  ├─ MACD, MACD Signal
+│  ├─ RSI7, RSI14
+│  └─ ATR14
+│
+├─ 创建5个隔离账户（每个独立的BacktestAccount）
+│  ├─ ConservativeTrader: $10,000现金, 0持仓
+│  ├─ BalancedTrader: $10,000现金, 0持仓
+│  ├─ AggressiveTrader: $10,000现金, 0持仓
+│  ├─ MomentumTrader: $10,000现金, 0持仓
+│  └─ MeanReversionTrader: $10,000现金, 0持仓
+│
+├─ 定义候选币种池
+│  └─ 所有agents可交易: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+│
+└─ 验证数据完整性 ✅
+```
+
+### Phase 2: 主循环 (每4小时一次决策，共180次)
+
+```
+For each 4-hour candle (2024-11-14 00:00 至 2024-12-14 20:00，共180根K线):
+
+  1. 获取当前4小时K线的市场数据
+     ├─ BTC: OHLCV + 技术指标
+     ├─ ETH: OHLCV + 技术指标
+     └─ SOL: OHLCV + 技术指标
+     └─ 时间戳: 2024-11-14 08:00 (示例)
+  
+  2. 为每个Agent构建个性化Prompt ⭐ 关键步骤
+     
+     对 ConservativeTrader:
+     ├─ 读取其BacktestAccount:
+     │  ├─ 现金余额: $9,800
+     │  ├─ 当前持仓: 
+     │  │  └─ BTC 0.05 Long @ $87,234 (盈亏: +$93.45, +2.1%)
+     │  └─ 总净值: $9,893.45
+     │
+     ├─ 提供候选币种（完整技术指标）:
+     │  ├─ BTCUSDT (当前价$89,105, EMA20=$88,500, MACD=0.25, RSI7=65)
+     │  ├─ ETHUSDT (当前价$3,142, EMA20=$3,100, MACD=0.15, RSI7=58)
+     │  └─ SOLUSDT (当前价$218, EMA20=$215, MACD=-0.05, RSI7=48)
+     │
+     └─ 构建完整Prompt（包含持仓+候选币+技术指标）
+     
+     对其他4个Agents重复相同流程（各自独立的账户状态）
+  
+  3. 并行发送给所有Agents (A2A通信)
+     ConservativeTrader ← 个性化Prompt（含其持仓）
+     BalancedTrader ← 个性化Prompt（含其持仓）
+     AggressiveTrader ← 个性化Prompt（含其持仓）
+     MomentumTrader ← 个性化Prompt（含其持仓）
+     MeanReversionTrader ← 个性化Prompt（含其持仓）
+  
+  4. 收集决策 (XML格式)
+     ConservativeTrader → <decision>[wait]</decision>
+     BalancedTrader → <decision>[open_long BTC 5x]</decision>
+     AggressiveTrader → <decision>[open_long BTC 10x]</decision>
+     MomentumTrader → <decision>[open_long ETH 8x]</decision>
+     MeanReversionTrader → <decision>[open_short BTC 3x]</decision>
+  
+  5. 解析XML决策
+     提取 <summary>, <reasoning>, <decision>
+     验证决策有效性
+  
+  6. 存储该轮决策 ⭐ 多轮交互
+     ├─ 记录每个agent的：
+     │  ├─ 市场观点 (从reasoning提取)
+     │  ├─ 对手分析 (Round 2+才有)
+     │  ├─ 策略调整 (Round 2+才有)
+     │  ├─ 执行动作
+     │  └─ 完整reasoning
+     └─ 用于后续披露点
+  
+  7. 执行交易（隔离账户）
+     对每个agent:
+     ├─ 检查余额是否足够
+     ├─ 应用滑点 (±2 bps)
+     ├─ 扣除手续费 (5 bps)
+     ├─ 更新持仓
+     ├─ 检查清算价
+     └─ 记录交易日志
+  
+  8. 检查是否披露点 ⭐ 多轮交互
+     If decision_cycle in [42, 84, 126]:  # 约Day 7, 14, 21
+     ├─ 创建披露包：
+     │  ├─ 汇总所有agents的Round N表现
+     │  ├─ 生成排行榜
+     │  └─ 格式化对手情报
+     ├─ 添加到disclosure_packages列表
+     └─ 下一轮的prompt将包含这些情报
+  
+  9. 更新状态
+     ├─ 计算未实现PnL
+     ├─ 记录净值曲线
+     ├─ 检查清算情况
+     └─ 进入下一个4小时周期
+     
+Loop完成后，共执行180次决策循环
+```
+
+### Phase 3: 最终评估
+
+```
+竞赛结束后:
+
+1. 计算每个Agent的完整指标
+   ├─ Return: 收益率、CAGR
+   ├─ Risk: 夏普、回撤、波动率
+   └─ Trading: 交易次数、胜率、盈亏比
+
+2. 计算评分
+   ├─ Profitability Score
+   ├─ Risk Management Score
+   ├─ Consistency Score
+   ├─ Efficiency Score
+   └─ Robustness Score
+
+3. 加权计算总分
+   Total Score = P×25% + R×25% + C×20% + E×20% + Rb×10%
+
+4. 排名
+   按Total Score降序排列
+
+5. 生成报告
+   ├─ 排行榜
+   ├─ 详细指标
+   ├─ 策略分析
+   └─ 关键洞察
+
+6. 输出CompetitionResult
+```

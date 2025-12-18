@@ -8,7 +8,8 @@ class TradingAction:
     symbol: str
     action: str  # open_long | open_short | close_long | close_short | hold | wait
     leverage: int = 1
-    quantity: float = 0.0
+    quantity: float = 0.0  # Auto-calculated from position_size_usd
+    position_size_usd: float = 0.0  # Notional value (includes leverage)
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     confidence: float = 0.5

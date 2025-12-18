@@ -29,7 +29,14 @@ class BacktestAccount:
     
     EPSILON = 1e-8  # For float comparisons
     
-    def __init__(self, initial_balance: float, fee_bps: float = 5.0, slippage_bps: float = 2.0):
+    def __init__(
+        self,
+        initial_balance: float,
+        fee_bps: float = 5.0,
+        slippage_bps: float = 2.0,
+        maker_fee_bps: float = None,
+        maintenance_margin_rate: float = 0.005,
+    ):
         """
         Initialize simulated account.
         
@@ -37,13 +44,24 @@ class BacktestAccount:
             initial_balance: Starting balance in USDT
             fee_bps: Trading fee in basis points (5 = 0.05%)
             slippage_bps: Slippage in basis points (2 = 0.02%)
+            maker_fee_bps: Optional maker fee in bps (if None, equals fee_bps)
+            maintenance_margin_rate: Used for liquidation threshold approximation
         """
         self.initial_balance = initial_balance
         self.cash = initial_balance
-        self.fee_rate = fee_bps / 10000.0
+        self.taker_fee_rate = fee_bps / 10000.0
+        self.maker_fee_rate = (maker_fee_bps / 10000.0) if maker_fee_bps is not None else self.taker_fee_rate
         self.slippage_rate = slippage_bps / 10000.0
+        self.maintenance_margin_rate = maintenance_margin_rate
         self.positions: Dict[str, Position] = {}  # key: "SYMBOL:side"
         self.realized_pnl = 0.0
+    
+    def set_fee_mode(self, maker_fee_bps: float = None, taker_fee_bps: float = None):
+        """Update fee config at runtime."""
+        if maker_fee_bps is not None:
+            self.maker_fee_rate = maker_fee_bps / 10000.0
+        if taker_fee_bps is not None:
+            self.taker_fee_rate = taker_fee_bps / 10000.0
     
     @staticmethod
     def _position_key(symbol: str, side: str) -> str:
@@ -76,8 +94,16 @@ class BacktestAccount:
         if key in self.positions:
             del self.positions[key]
     
-    def open(self, symbol: str, side: str, quantity: float, leverage: int, 
-             price: float, timestamp: int) -> Tuple[Optional[Position], float, float, Optional[str]]:
+    def open(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        leverage: int,
+        price: float,
+        timestamp: int,
+        is_maker: bool = False,
+    ) -> Tuple[Optional[Position], float, float, Optional[str]]:
         """
         Open a new position or add to existing position.
         
@@ -105,7 +131,8 @@ class BacktestAccount:
         
         # Calculate order value and costs
         order_value = quantity * exec_price
-        fee = order_value * self.fee_rate
+        fee_rate = self.maker_fee_rate if is_maker else self.taker_fee_rate
+        fee = order_value * fee_rate
         margin_needed = order_value / leverage
         total_cost = margin_needed + fee
         
@@ -138,13 +165,21 @@ class BacktestAccount:
             pos.notional += order_value
             # Keep same leverage
         
-        # Calculate liquidation price
-        pos.liquidation_price = self._compute_liquidation(pos.entry_price, pos.leverage, pos.side)
+        # Calculate liquidation price with maintenance margin
+        pos.liquidation_price = self._compute_liquidation(
+            pos.entry_price, pos.leverage, pos.side, self.maintenance_margin_rate
+        )
         
         return pos, fee, exec_price, None
     
-    def close(self, symbol: str, side: str, quantity: float, 
-              price: float) -> Tuple[float, float, float, Optional[str]]:
+    def close(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float,
+        is_maker: bool = False,
+    ) -> Tuple[float, float, float, Optional[str]]:
         """
         Close a position (partially or fully).
         
@@ -171,7 +206,8 @@ class BacktestAccount:
         
         # Calculate close value and fee
         close_value = quantity * exec_price
-        fee = close_value * self.fee_rate
+        fee_rate = self.maker_fee_rate if is_maker else self.taker_fee_rate
+        fee = close_value * fee_rate
         
         # Calculate PnL for the quantity being closed
         pnl = self._realized_pnl(pos, quantity, exec_price)
@@ -286,26 +322,22 @@ class BacktestAccount:
                 return price + slippage_amount  # Cover at higher price
     
     @staticmethod
-    def _compute_liquidation(entry: float, leverage: int, side: str) -> float:
+    def _compute_liquidation(entry: float, leverage: int, side: str, mm_rate: float) -> float:
         """
-        Calculate liquidation price.
-        
-        Liquidation happens when loss >= margin
-        With leverage, margin = notional / leverage
-        So loss = notional / leverage means 100% of margin is lost
+        Approximate liquidation price including maintenance margin.
+        For long: liq when price <= entry * (1 - 1/leverage) / (1 - mm_rate)
+        For short: symmetric.
         """
         if leverage <= 0:
             return 0.0
-        
-        # Liquidation at 100% loss of margin
-        loss_pct = 1.0 / leverage  # e.g., 5x leverage = 20% price move to liquidate
-        
+        if mm_rate < 0:
+            mm_rate = 0.0
+
+        base_move = 1.0 / leverage
         if side == 'long':
-            # Price drops by loss_pct
-            return entry * (1.0 - loss_pct)
-        else:  # short
-            # Price rises by loss_pct
-            return entry * (1.0 + loss_pct)
+            return entry * (1.0 - base_move) / max(1e-6, (1.0 - mm_rate))
+        else:
+            return entry * (1.0 + base_move) / max(1e-6, (1.0 - mm_rate))
     
     @staticmethod
     def _realized_pnl(pos: Position, qty: float, exit_price: float) -> float:
@@ -322,3 +354,30 @@ class BacktestAccount:
             return (current_price - pos.entry_price) * pos.quantity
         else:  # short
             return (pos.entry_price - current_price) * pos.quantity
+
+    def apply_funding(self, funding_rates: Dict[str, float]) -> float:
+        """
+        Apply funding payments/receipts for all open positions.
+        
+        Args:
+            funding_rates: map {symbol: funding_rate_decimal_per_interval}
+                           e.g., 0.0001 means 1 bps payment from long to short
+        
+        Returns:
+            total_funding (positive means received, negative means paid)
+        """
+        total = 0.0
+        for pos in list(self.positions.values()):
+            rate = funding_rates.get(pos.symbol)
+            if rate is None:
+                continue
+            funding = pos.notional * rate
+            # longs pay when rate > 0, shorts receive; reverse if rate < 0
+            if pos.side == 'long':
+                total -= funding
+            else:
+                total += funding
+        # Apply to cash/realized
+        self.cash += total
+        self.realized_pnl += total
+        return total

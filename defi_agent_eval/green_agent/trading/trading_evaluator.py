@@ -16,7 +16,10 @@ from __future__ import annotations
 import json
 import math
 from datetime import datetime
-from typing import Callable, Dict, List, Optional, Tuple
+import os
+import requests
+from litellm import completion
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -39,10 +42,10 @@ from .models import (
     AgentPerformance,
     AgentReasoningQuality,
 )
+from .ai_cache import AICache
 
 
 DEFAULT_CONFIG: Dict = {
-    # Broader candidate set so agents can self-select
     "symbols": [
         "BTCUSDT",
         "ETHUSDT",
@@ -55,7 +58,7 @@ DEFAULT_CONFIG: Dict = {
         "LINKUSDT",
         "MATICUSDT",
     ],
-    "start_date": "2025-11-14",
+    "start_date": "2025-12-01",
     "end_date": "2025-12-14",
     "timeframe": "4h",
     "decision_interval": "4h",
@@ -83,10 +86,12 @@ class TradingEvaluator:
         agent_names: List[str],
         agent_clients: Optional[Dict[str, Callable[[str], TradingDecision]]] = None,
         config: Optional[Dict] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         self.config = {**DEFAULT_CONFIG, **(config or {})}
         self.agent_names = agent_names
         self.agent_clients = agent_clients or {}
+        self._progress_callback = progress_callback
 
         self.accounts: Dict[str, BacktestAccount] = {
             name: BacktestAccount(
@@ -107,6 +112,23 @@ class TradingEvaluator:
         self.trade_history: Dict[str, List[TradeEvent]] = {name: [] for name in agent_names}
         self.equity_history: Dict[str, List[EquityPoint]] = {name: [] for name in agent_names}
         self.performance: Dict[str, AgentPerformance] = {}
+        
+    def _progress(self, event: Dict[str, Any]) -> None:
+        """Best-effort progress hook (used by AgentBeats green agent to show progress)."""
+        cb = getattr(self, "_progress_callback", None)
+        if not cb:
+            return
+        try:
+            cb(event)
+        except Exception:
+            # Never let progress reporting break evaluation
+            return
+
+        # Initialize AI cache if enabled
+        cache_file = self.config.get("ai_cache_file")
+        self.ai_cache = AICache(cache_file) if cache_file else None
+        if self.ai_cache:
+            print(f"🗄️  AI Cache enabled: {cache_file}")
 
     # ------------------------------------------------------------------ #
     # Data loading and preparation
@@ -144,12 +166,11 @@ class TradingEvaluator:
         margin_pct = (margin_used / equity * 100) if equity > 0 else 0.0
         balance_pct = (balance / equity * 100) if equity > 0 else 0.0
 
-        # Header
+    
         prompt_lines = [
             f"Time: {decision_time} | Cycle: #{cycle_idx} | Runtime: {runtime_days:.1f}d",
         ]
 
-        # BTC headline if available
         btc_price = current_prices.get("BTCUSDT", None)
         if btc_price is not None:
             btc_4h = self.data_4h.get("BTCUSDT", pd.DataFrame())
@@ -227,7 +248,9 @@ class TradingEvaluator:
         return "\n".join(prompt_lines)
 
     def _format_position_rich(self, pos: Position, idx: int, price_map: Dict[str, float], ts: pd.Timestamp) -> str:
-        current_price = price_map.get(pos.symbol, pos.entry_price)
+        current_price = price_map.get(pos.symbol)
+        if current_price is None:
+            current_price = pos.entry_price
         unrealized = BacktestAccount._unrealized_pnl(pos, current_price)
         pnl_pct = (unrealized / pos.notional * 100) if pos.notional else 0.0
         notional = pos.notional
@@ -259,12 +282,32 @@ class TradingEvaluator:
         macd4h_arr = self._array_str(tail4h.get("macd"))
         rsi4h_arr = self._array_str(tail4h.get("rsi14"))
 
+        # Pre-format values that might be None or contain special chars
+        cp_str = f"{current_price:.2f}" if current_price is not None else "N/A"
+        entry_str = f"{pos.entry_price:.2f}" if pos.entry_price is not None else "N/A"
+        liq_str = f"{pos.liquidation_price:.2f}" if pos.liquidation_price is not None else "N/A"
+        side_str = str(pos.side).upper() if pos.side else "N/A"
+        symbol_str = str(pos.symbol) if pos.symbol else "N/A"
+        qty_str = f"{pos.quantity:.4f}" if pos.quantity is not None else "0.0000"
+        notional_str = f"{notional:.2f}" if notional is not None else "0.00"
+        margin_str = f"{pos.margin:.2f}" if pos.margin is not None else "0.00"
+        leverage_str = str(pos.leverage) if pos.leverage is not None else "1"
+        
+        # Pre-format indicator values that might be NaN
+        ema20_now = tail4h["ema20"].iloc[-1] if not tail4h.empty else float("nan")
+        macd_now  = tail4h["macd"].iloc[-1]  if not tail4h.empty else float("nan")
+        rsi7_now  = tail4h["rsi7"].iloc[-1]  if not tail4h.empty else float("nan")
+        
+        ema20_str = f"{ema20_now:.2f}" if not pd.isna(ema20_now) else "N/A"
+        macd_str = f"{macd_now:.4f}" if not pd.isna(macd_now) else "N/A"
+        rsi7_str = f"{rsi7_now:.2f}" if not pd.isna(rsi7_now) else "N/A"
+        
         return (
-            f"{idx}. {pos.symbol} {pos.side.upper()} | Entry {pos.entry_price:.2f} Current {current_price:.2f} | "
-            f"Qty {pos.quantity:.4f} | Notional {notional:.2f} USDT | PnL {pnl_pct:+.2f}% | PnL Amt {unrealized:+.2f} USDT | "
-            f"Max Profit N/A | Leverage {pos.leverage}x | Margin {pos.margin:.2f} | Liq {pos.liquidation_price:.2f} | Hold {hold_hours:.1f}h\n\n"
-            f"current_price = {current_price:.2f}, current_ema20 = {tail4h['ema20'].iloc[-1]:.2f if not tail4h.empty else 'N/A'}, "
-            f"current_macd = {tail4h['macd'].iloc[-1]:.4f if not tail4h.empty else 'N/A'}, current_rsi (7 period) = {tail4h['rsi7'].iloc[-1]:.2f if not tail4h.empty else 'N/A'}\n\n"
+            f"{idx}. {symbol_str} {side_str} | Entry {entry_str} Current {cp_str} | "
+            f"Qty {qty_str} | Notional {notional_str} USDT | PnL {pnl_pct:+.2f}% | PnL Amt {unrealized:+.2f} USDT | "
+            f"Max Profit N/A | Leverage {leverage_str}x | Margin {margin_str} | Liq {liq_str} | Hold {hold_hours:.1f}h\n\n"
+            f"current_price = {cp_str}, current_ema20 = {ema20_str}, "
+            f"current_macd = {macd_str}, current_rsi (7 period) = {rsi7_str}\n\n"
             f"Open Interest: Latest: N/A Average: N/A\nFunding Rate: N/A\n\n"
             f"Intraday series (3‑minute intervals, oldest → latest):\n"
             f"Mid prices: [{mid_prices}]\n"
@@ -290,6 +333,10 @@ class TradingEvaluator:
         ema20 = latest4h.iloc[-1].ema20 if not latest4h.empty else None
         macd_val = latest4h.iloc[-1].macd if not latest4h.empty else None
         rsi7_val = latest4h.iloc[-1].rsi7 if not latest4h.empty else None
+        cp_str = f"{current_price:.2f}" if current_price is not None else "N/A"
+        ema20_str = f"{ema20:.2f}" if ema20 is not None else "N/A"
+        macd_str = f"{macd_val:.4f}" if macd_val is not None else "N/A"
+        rsi7_str = f"{rsi7_val:.2f}" if rsi7_val is not None else "N/A"
 
         intraday = window_df(df3m, ts, self.config["intraday_lookback_hours"])
         intraday_tail = last_rows(intraday, 10)
@@ -314,8 +361,8 @@ class TradingEvaluator:
 
         return (
             f"### {idx}. {symbol}\n\n"
-            f"current_price = {current_price:.2f if current_price else 'N/A'}, current_ema20 = {ema20:.2f if ema20 else 'N/A'}, "
-            f"current_macd = {macd_val:.4f if macd_val else 'N/A'}, current_rsi (7 period) = {rsi7_val:.2f if rsi7_val else 'N/A'}\n\n"
+            f"current_price = {cp_str}, current_ema20 = {ema20_str}, "
+            f"current_macd = {macd_str}, current_rsi (7 period) = {rsi7_str}\n\n"
             f"Open Interest: Latest: N/A Average: N/A\n"
             f"Funding Rate: N/A\n\n"
             f"Intraday series (3‑minute intervals, oldest → latest):\n"
@@ -355,31 +402,60 @@ class TradingEvaluator:
     # ------------------------------------------------------------------ #
     # Agent decision handling
     # ------------------------------------------------------------------ #
-    def get_agent_decision(self, agent_name: str, prompt: str) -> TradingDecision:
+    def get_agent_decision(self, agent_name: str, prompt: str, timestamp: Optional[pd.Timestamp] = None) -> TradingDecision:
         """
         Obtain a TradingDecision from a White Agent.
+        
+        If AI cache is enabled, checks cache first before calling the agent.
 
         The callable in agent_clients should accept a prompt string and return either
         a TradingDecision or a dict with the same shape.
         """
+        # Try cache first
+        if self.ai_cache and timestamp:
+            timestamp_str = str(timestamp)
+            cached_decision = self.ai_cache.get(agent_name, prompt, timestamp_str)
+            if cached_decision is not None:
+                print(f"  💾 [Cache HIT] {agent_name} at {timestamp_str}")
+                return cached_decision
+        
+        # Cache miss - call AI
         handler = self.agent_clients.get(agent_name)
         if handler is None:
-            return TradingDecision(summary="hold", reasoning="no agent attached", actions=[])
+            raise RuntimeError(f"No agent client attached for '{agent_name}'")
 
         result = handler(prompt)
         if isinstance(result, TradingDecision):
             return result
 
-        # Gracefully handle plain dicts
+        # If not TradingDecision, expect a dict-like structure
+        if not isinstance(result, dict):
+            raise TypeError(f"Agent '{agent_name}' returned unsupported type: {type(result)}")
+
+        raw_actions = result.get("actions", [])
+        if raw_actions is None:
+            raw_actions = []
+        if not isinstance(raw_actions, list):
+            raise TypeError(f"Agent '{agent_name}' returned non-list actions: {type(raw_actions)}")
+
         actions = [
-            TradingAction(**a) if not isinstance(a, TradingAction) else a
-            for a in result.get("actions", [])
+            a if isinstance(a, TradingAction) else TradingAction(**a)
+            for a in raw_actions
         ]
-        return TradingDecision(
+        decision = TradingDecision(
             summary=result.get("summary", ""),
             reasoning=result.get("reasoning", ""),
             actions=actions,
         )
+        if not decision.reasoning or not decision.reasoning.strip():
+            raise ValueError(f"Agent '{agent_name}' must provide non-empty reasoning")
+        
+        # Store in cache
+        if self.ai_cache and timestamp:
+            timestamp_str = str(timestamp)
+            self.ai_cache.put(agent_name, prompt, timestamp_str, decision)
+        
+        return decision
 
     # ------------------------------------------------------------------ #
     # Execution + bookkeeping
@@ -400,14 +476,88 @@ class TradingEvaluator:
             if symbol not in price_map:
                 continue
             price = price_map[symbol]
+            if price is None or (isinstance(price, float) and math.isnan(price)) or price <= 0:
+                print(f"  ⚠️  {agent_name} {action.action} {symbol}: skip, invalid price={price}")
+                continue
             leverage = max(1, int(action.leverage))
             side = "long" if "long" in action.action else "short"
+
+            # Convert notional -> quantity (nofx style). If model returns position_size_usd,
+            # we derive base-asset quantity here so the backtest account can execute.
+            # If model gives none or too large, we auto-size based on balance so it MUST place an order.
+            max_notional = account.cash * leverage * 0.88 if hasattr(account, "cash") else 0.0
+            pos_size = 0.0
+            try:
+                pos_size = float(getattr(action, "position_size_usd", 0.0)) if getattr(action, "position_size_usd", 0.0) else 0.0
+            except Exception:
+                pos_size = 0.0
+
+            if max_notional > 0:
+                if pos_size <= 0:
+                    pos_size = max_notional  # auto-use the capped maximum if model did not provide
+                if pos_size > max_notional:
+                    print(
+                        f"  ⚠️  {agent_name} {action.action} {symbol}: "
+                        f"position_size_usd too large (${pos_size:.2f}), "
+                        f"capping to ${max_notional:.2f} (cash=${account.cash:.2f}, lev={leverage}x)"
+                    )
+                    pos_size = max_notional
+                    if hasattr(action, "position_size_usd"):
+                        action.position_size_usd = pos_size
+
+            if pos_size > 0 and price > 0:
+                # Pre-check margin + fee; if still too high, scale down to fit cash
+                fee_est = pos_size * 0.0004  # taker fee estimate 0.04%
+                required_margin = pos_size / leverage
+                total_needed = required_margin + fee_est
+                if account.cash > 0 and total_needed > account.cash:
+                    scale = (account.cash * 0.98) / total_needed  # leave 2% buffer
+                    if scale > 0:
+                        pos_size *= scale
+                        if hasattr(action, "position_size_usd"):
+                            action.position_size_usd = pos_size
+                        required_margin = pos_size / leverage
+                        fee_est = pos_size * 0.0004
+                        total_needed = required_margin + fee_est
+                        print(
+                            f"  ⚠️  {agent_name} {action.action} {symbol}: scaled down notional to ${pos_size:.2f} "
+                            f"(margin+fee now ${total_needed:.2f}, cash=${account.cash:.2f})"
+                        )
+
+                if total_needed > account.cash:
+                    print(
+                        f"  ❌ {agent_name} {action.action} {symbol}: insufficient cash for "
+                        f"notional ${pos_size:.2f} (need margin+fee ${total_needed:.2f}, "
+                        f"cash=${account.cash:.2f}, lev={leverage}x)"
+                    )
+                    continue
+
+                action.quantity = pos_size / price
+                print(
+                    f"  📊 {agent_name} {action.action} {symbol}: "
+                    f"position_size_usd=${pos_size:.2f} → quantity={action.quantity:.6f} @ price=${price:.2f}"
+                )
+                if action.quantity <= BacktestAccount.EPSILON:
+                    raise RuntimeError(
+                        f"[execute_decision] quantity too small after conversion: "
+                        f"position_size_usd={pos_size}, price={price}"
+                    )
+
+            # If still no usable quantity, auto-skip to avoid failing open()
+            if action.quantity <= BacktestAccount.EPSILON:
+                print(
+                    f"  ⚠️  {agent_name} {action.action} {symbol}: skip, quantity too small ({action.quantity})"
+                )
+                continue
 
             if action.action == "open_long":
                 pos, fee, exec_price, err = account.open(
                     symbol, "long", action.quantity, leverage, price, int(timestamp.timestamp())
                 )
-                if err is None and pos:
+                if err is not None:
+                    print(f"  ❌ {agent_name} open_long {symbol} FAILED: {err}")
+                elif err is None and pos:
+                    print(f"  ✅ {agent_name} opened LONG {symbol}: qty={action.quantity}, leverage={leverage}x, price={exec_price:.2f}")
                     trades.append(
                         TradeEvent(
                             timestamp=int(timestamp.timestamp()),
@@ -429,7 +579,10 @@ class TradingEvaluator:
                 pos, fee, exec_price, err = account.open(
                     symbol, "short", action.quantity, leverage, price, int(timestamp.timestamp())
                 )
-                if err is None and pos:
+                if err is not None:
+                    print(f"  ❌ {agent_name} open_short {symbol} FAILED: {err}")
+                elif err is None and pos:
+                    print(f"  ✅ {agent_name} opened SHORT {symbol}: qty={action.quantity}, leverage={leverage}x, price={exec_price:.2f}")
                     trades.append(
                         TradeEvent(
                             timestamp=int(timestamp.timestamp()),
@@ -726,31 +879,262 @@ class TradingEvaluator:
         perf.total_score = trading_score * 0.7 + perf.reasoning_score * 0.3
         return perf
 
+    # Normalize metrics across agents and recompute total_score with normalized trading score.
+    def _normalize_and_rescore(self, perfs: Dict[str, AgentPerformance]) -> Dict[str, AgentPerformance]:
+        if not perfs:
+            return perfs
+
+        # Collect metric arrays
+        metrics = {
+            "total_return_pct": [],
+            "sharpe_ratio": [],
+            "max_drawdown_pct": [],
+            "win_rate": [],
+            "profit_factor": [],
+            "cagr": [],
+            "volatility": [],
+        }
+        for p in perfs.values():
+            metrics["total_return_pct"].append(p.total_return_pct)
+            metrics["sharpe_ratio"].append(p.sharpe_ratio)
+            metrics["max_drawdown_pct"].append(p.max_drawdown_pct)
+            metrics["win_rate"].append(p.win_rate)
+            metrics["profit_factor"].append(p.profit_factor)
+            metrics["cagr"].append(p.cagr)
+            metrics["volatility"].append(p.volatility)
+
+        def norm_list(arr):
+            if not arr:
+                return []
+            lo, hi = min(arr), max(arr)
+            if hi - lo < 1e-9:
+                return [0.5] * len(arr)
+            return [(x - lo) / (hi - lo) for x in arr]
+
+        norm_map: Dict[str, Dict[str, float]] = {k: {} for k in metrics.keys()}
+        for key, arr in metrics.items():
+            normed = norm_list(arr)
+            for agent_name, val in zip(perfs.keys(), normed):
+                norm_map[key][agent_name] = val
+
+        # Invert for "lower is better" metrics
+        invert_keys = {"max_drawdown_pct", "volatility"}
+        for k in invert_keys:
+            for agent_name, val in norm_map[k].items():
+                norm_map[k][agent_name] = 1.0 - val
+
+        # Recompute a normalized trading score and total_score
+        for agent_name, p in perfs.items():
+            rt = norm_map["total_return_pct"][agent_name]
+            sh = norm_map["sharpe_ratio"][agent_name]
+            dd = norm_map["max_drawdown_pct"][agent_name]
+            wr = norm_map["win_rate"][agent_name]
+            pf = norm_map["profit_factor"][agent_name]
+            cg = norm_map["cagr"][agent_name]
+            vol = norm_map["volatility"][agent_name]
+
+            normalized_trading = (
+                rt * 0.25 +
+                sh * 0.20 +
+                wr * 0.15 +
+                pf * 0.15 +
+                dd * 0.15 +
+                vol * 0.10
+            )
+            reasoning = p.reasoning_score or 0.0
+            p.normalized_trading_score = normalized_trading  # type: ignore
+            p.total_score = normalized_trading * 0.7 + reasoning * 0.3
+        return perfs
+
+    def _collect_reasoning_log(self, agent_name: str) -> str:
+        """Concatenate all stored round decisions' reasoning for an agent."""
+        logs = []
+        for d in self.round_decisions:
+            if d.agent_name != agent_name:
+                continue
+            summary = "; ".join([f"{a.action} {a.symbol} x{a.leverage}" for a in d.actions]) if d.actions else ""
+            logs.append(
+                f"[Cycle {d.round}] market_view={d.market_view or ''} actions={summary}\n{d.full_reasoning}"
+            )
+        return "\n\n".join(logs) if logs else "No reasoning records."
+
+    def _collect_execution_summary(self, agent_name: str) -> Dict[str, float]:
+        """Simple execution stats from trade history for prompt context."""
+        trades = self.trade_history.get(agent_name, [])
+        opens = [t for t in trades if "open" in t.action]
+        closes = [t for t in trades if "close" in t.action]
+        realized = sum(t.realized_pnl for t in trades)
+        return {
+            "total_trades": len(trades),
+            "open_trades": len(opens),
+            "close_trades": len(closes),
+            "realized_pnl": realized,
+        }
+
+    def judge_performance_llm(self, performance: Dict[str, AgentPerformance]) -> tuple[str, Dict[str, float]]:
+        """
+        LLM-based reasoning scoring. Returns (text, {agent: reasoning_score[0,1]}).
+        Model: TRADING_JUDGE_MODEL (default deepseek/deepseek-chat); API key/base from DEEPSEEK_/OPENAI_ envs.
+        """
+        model = os.getenv("TRADING_JUDGE_MODEL", "deepseek/deepseek-chat")
+        api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
+        api_base = os.getenv("DEEPSEEK_API_BASE") or os.getenv("OPENAI_API_BASE")
+        
+        print(f"\n🤖 Green Agent Judge Configuration:")
+        print(f"   Model: {model}")
+        print(f"   API Key: {'✅ Set' if api_key else '❌ Missing'}")
+        print(f"   API Base: {api_base if api_base else 'default'}")
+        
+        if not api_key:
+            return "LLM judge skipped (missing API key).", {}
+
+        sys_prompt = (
+            "You are a trading competition judge. Evaluate agents on profitability, risk management, consistency, efficiency, "
+            "overall total_score, AND give a reasoning_score [0,1] for explanation quality. "
+            "Return short text AND JSON: {\"scores\":[{\"agent\":\"...\",\"reasoning_score\":0-1,\"note\":\"...\"}],"
+            "\"winner\":\"...\",\"reason\":\"...\"}. Text <= 200 words."
+        )
+        perf_summary = []
+        for name, perf in performance.items():
+            if name == "_judge_text":
+                continue
+            perf_summary.append(
+                {
+                    "agent": name,
+                    "total_return_pct": perf.total_return_pct,
+                    "max_drawdown_pct": perf.max_drawdown_pct,
+                    "sharpe_ratio": perf.sharpe_ratio,
+                    "win_rate": perf.win_rate,
+                    "profit_factor": perf.profit_factor,
+                    "avg_trades_per_day": perf.avg_trades_per_day,
+                    "total_score": perf.total_score,
+                    "reasoning_log": self._collect_reasoning_log(name),
+                    "execution_summary": self._collect_execution_summary(name),
+                }
+            )
+        user_prompt = (
+            "Evaluate these agent performances and reasonings. Each item contains metrics, "
+            "full reasoning logs (all cycles), and execution summary (counts and realized pnl).\n"
+            f"{json.dumps(perf_summary, indent=2)}\n"
+            "Return JSON with scores as before, but reasoning_score should consider the provided reasoning_log quality.\n"
+            "Also provide a brief paragraph summary."
+        )
+
+        try:
+            # Direct HTTP call to DeepSeek (OpenAI-compatible API)
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            }
+            payload = {
+                "model": "deepseek-chat",  # DeepSeek's model name (no prefix needed for direct API)
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.1,
+            }
+            
+            response = requests.post(
+                f"{api_base}/v1/chat/completions" if api_base else "https://api.deepseek.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            response.raise_for_status()
+            resp_json = response.json()
+            content = resp_json["choices"][0]["message"]["content"]
+            score_map: Dict[str, float] = {}
+            import re
+            try:
+                match = re.search(r"\{.*\}", content, re.DOTALL)
+                if match:
+                    payload = json.loads(match.group(0))
+                    for item in payload.get("scores", []):
+                        agent = item.get("agent")
+                        rs = item.get("reasoning_score")
+                        if agent and isinstance(rs, (int, float)):
+                            score_map[agent] = max(0.0, min(1.0, float(rs)))
+            except Exception:
+                score_map = {}
+            return content, score_map
+        except Exception as e:
+            return f"LLM judge failed: {e}", {}
+
     # ------------------------------------------------------------------ #
     # Competition driver
     # ------------------------------------------------------------------ #
     def run_competition(self) -> Dict[str, AgentPerformance]:
         """Main 4h decision loop."""
+        self._progress({"type": "stage", "stage": "load_and_prepare_data"})
         self.load_and_prepare_data()
         timestamps = pd.date_range(
             start=self.config["start_date"],
             end=self.config["end_date"],
             freq=self.config["decision_interval"].upper(),
             inclusive="left",
+            tz="UTC",
         )
+        
+        # Limit to total_decision_cycles if specified
+        max_cycles = self.config.get("total_decision_cycles")
+        if max_cycles and max_cycles > 0:
+            timestamps = timestamps[:max_cycles]
+            print(f"\n🔄 Running {len(timestamps)} decision cycles (limited by config)...\n")
+        else:
+            print(f"\n🔄 Running {len(timestamps)} decision cycles...\n")
 
         for cycle_idx, ts in enumerate(timestamps, 1):
+            print(f"\n{'='*80}")
+            print(f"CYCLE {cycle_idx}/{len(timestamps)} at {ts}")
+            print(f"{'='*80}")
+            self._progress({"type": "cycle", "cycle_idx": cycle_idx, "total_cycles": len(timestamps), "timestamp": str(ts)})
+            
             if cycle_idx in self.config["disclosure_cycles"]:
                 self.create_disclosure_package(cycle_idx, ts)
 
             for agent_name in self.agent_names:
+                self._progress({"type": "agent", "stage": "build_prompt", "agent": agent_name, "cycle_idx": cycle_idx})
                 prompt = self.build_market_prompt(agent_name, cycle_idx, ts)
-                decision = self.get_agent_decision(agent_name, prompt)
+                self._progress({"type": "agent", "stage": "get_decision", "agent": agent_name, "cycle_idx": cycle_idx})
+                decision = self.get_agent_decision(agent_name, prompt, timestamp=ts)
+                self._progress({"type": "agent", "stage": "store_decision", "agent": agent_name, "cycle_idx": cycle_idx})
                 self.store_round_decision(agent_name, cycle_idx, decision)
+                self._progress({"type": "agent", "stage": "execute_decision", "agent": agent_name, "cycle_idx": cycle_idx})
                 self.execute_decision(agent_name, decision, ts)
+                self._progress({"type": "agent", "stage": "done", "agent": agent_name, "cycle_idx": cycle_idx})
+        
+        print(f"\n{'='*80}")
+        print(f"✅ Completed {len(timestamps)} cycles. Calculating final performance...")
+        print(f"{'='*80}\n")
+        self._progress({"type": "stage", "stage": "calculate_performance"})
+        
+        # Print cache statistics
+        if self.ai_cache:
+            stats = self.ai_cache.stats()
+            print(f"📊 AI Cache Statistics:")
+            print(f"   Entries: {stats['entries']}")
+            print(f"   Hits: {stats['hits']} | Misses: {stats['misses']}")
+            print(f"   Hit Rate: {stats['hit_rate']}")
+            print()
 
         # Final performance
         for agent_name in self.agent_names:
             self.performance[agent_name] = self._calculate_performance(agent_name)
+
+        # LLM reasoning scoring: inject reasoning_score and recompute total_score
+        judge_text, score_map = self.judge_performance_llm(self.performance)
+        for agent_name, perf in self.performance.items():
+            if agent_name in score_map:
+                perf.reasoning_score = score_map[agent_name]
+                # Note: _score_performance runs pre-normalized scoring; final total_score is set after normalization
+                perf = self._score_performance(perf)
+                self.performance[agent_name] = perf
+
+        # Normalize across agents and recompute final total_score (normalized trading 70% + reasoning 30%)
+        self.performance = self._normalize_and_rescore(self.performance)
+        # store judge text for artifact use
+        self.performance["_judge_text"] = judge_text  # type: ignore
+
         return self.performance
 

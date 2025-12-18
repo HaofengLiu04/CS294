@@ -67,9 +67,22 @@ class BinanceHTTPFetcher:
                 "endTime": end_ms,
                 "limit": limit,
             }
-            resp = self.session.get(self.BASE_URL, params=params, timeout=10)
-            resp.raise_for_status()
-            rows = resp.json()
+            # Increase timeout and add retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    resp = self.session.get(self.BASE_URL, params=params, timeout=30)
+                    resp.raise_for_status()
+                    rows = resp.json()
+                    break
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                    if attempt < max_retries - 1:
+                        print(f"⚠️  Timeout fetching {symbol} {interval}, retrying ({attempt + 1}/{max_retries})...")
+                        time.sleep(2)
+                        continue
+                    else:
+                        print(f"❌ Failed to fetch {symbol} {interval} after {max_retries} attempts")
+                        raise
             if not rows:
                 break
 
@@ -165,4 +178,5 @@ def last_rows(df: pd.DataFrame, n: int) -> pd.DataFrame:
     if df.empty:
         return df
     return df.tail(n)
+
 
