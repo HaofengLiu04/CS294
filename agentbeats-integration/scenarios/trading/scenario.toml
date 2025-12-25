@@ -1,0 +1,26 @@
+[green_agent]
+endpoint = "http://127.0.0.1:9109"
+cmd = "python3.14 scenarios/trading/trading_green.py --host 127.0.0.1 --port 9109"
+
+[[participants]]
+role = "agent_alice"
+endpoint = "http://127.0.0.1:9110"
+cmd = "python3.14 scenarios/trading/trading_white_custom.py --host 127.0.0.1 --port 9110 --name alice"
+
+[[participants]]
+role = "agent_bob"
+endpoint = "http://127.0.0.1:9111"
+cmd = "python3.14 scenarios/trading/trading_white_custom.py --host 127.0.0.1 --port 9111 --name bob"
+
+[config]
+# Trading competition configuration (FAST MODE for testing)
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+start_date = "2024-12-01"
+end_date = "2024-12-03"  # Reduced from Dec 14 to Dec 3 (2 days instead of 13)
+timeframe = "4h"
+total_decision_cycles = 12  # Limit to 12 cycles (2 days = 12 cycles of 4h each)
+initial_balance = 10000.0
+fee_bps = 5.0
+slippage_bps = 2.0
+enable_multi_round = true
+disclosure_cycles = [6]  # One disclosure at cycle 6 (midpoint)

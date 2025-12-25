@@ -1,4 +1,4 @@
-# CS294 - AI Agents Course Projects
+# CS294 - DeFi Agent Evaluation Framework
 
 **Team A10**: Mingxi Tang, Yufeng Yan, Haofeng Liu, Meixin Ma
 
@@ -8,7 +8,7 @@ This repository contains a multi-agent evaluation framework built for UC Berkele
 
 The main deliverable is an **AgentBeats (A2A) trading competition** where:
 - A **Green Agent** orchestrates a backtest competition and produces evaluation artifacts.
-- Two **White Agents** (currently: **Conservative** and **Aggressive**) generate **structured trading decisions + reasoning** using an LLM.
+- Two **White Agents** (Alice & Bob) generate **structured trading decisions + reasoning** using an LLM (OpenAI, DeepSeek, or Gemini).
 - A backtest engine executes trades on historical market data, computes performance metrics, and the green agent produces a final score + winner.
 
 The design and intent are documented in `green_white_logic.md` (English, long-form spec).
@@ -50,15 +50,15 @@ total\_score = 0.7 \times normalized\_trading\_score + 0.3 \times reasoning\_sco
 
 ## Repository Layout (Folders)
 
-### `agentbeats-tutorial/`
-AgentBeats local runner (A2A-based) + scenarios.
+### `agentbeats-integration/`
+Contains the AgentBeats runner and scenario configurations. This folder name is inherited from the base framework but contains our custom implementation.
 
 You will run the trading competition via:
-- `agentbeats-tutorial/scenarios/trading/scenario.toml`
+- `agentbeats-integration/scenarios/trading/scenario.toml`
 
 Key scenario code:
-- `agentbeats-tutorial/scenarios/trading/trading_green.py`: Green agent (wraps `TradingEvaluator`)
-- `agentbeats-tutorial/scenarios/trading/trading_white.py`: White agent (LLM-backed, returns JSON)
+- `agentbeats-integration/scenarios/trading/trading_green.py`: Green agent (wraps `TradingEvaluator`)
+- `agentbeats-integration/scenarios/trading/trading_white_custom.py`: White agent (Custom wrapper supporting OpenAI/DeepSeek)
 
 ### `defi_agent_eval/`
 Evaluation engines and primitives:
@@ -73,45 +73,49 @@ Evaluation engines and primitives:
 ### `cache/`
 Local caches (ignored by git). Safe to delete if you want a clean run.
 
-## Quick Start (Run Trading Competition via AgentBeats)
+## Quick Start (Run Trading Competition)
 
 Prerequisites:
 - Python 3.11+
 - [`uv`](https://github.com/astral-sh/uv)
-- A `.env` file in `agentbeats-tutorial/` containing your API key(s) (do **not** commit keys)
-  - **Required**: `DEEPSEEK_API_KEY` - Your DeepSeek API key for LLM-based agents
-- **VPN Required**: If you're in the US, you need a VPN to access Binance data (Binance US does not allow access to Binance.com data)
+- A `.env` file in `agentbeats-integration/` containing your API key(s) (do **not** commit keys)
 
-One-time install (install everything in this workspace first):
+### 1. Setup Environment
+Create a `.env` file in `agentbeats-integration/` with your API keys:
+
 ```bash
-cd .
-uv pip install -r requirements.txt
+# For OpenAI models (Default)
+OPENAI_API_KEY=sk-...
+TRADING_JUDGE_MODEL=gpt-4o-mini
+
+# OR for DeepSeek (via OpenAI-compatible endpoint)
+OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=https://api.deepseek.com
+TRADING_JUDGE_MODEL=deepseek-chat
 ```
 
-Then install the AgentBeats runner package:
+### 2. Install Dependencies
 ```bash
-cd agentbeats-tutorial
-uv pip install -e .
+cd agentbeats-integration
+uv sync
 ```
 
+### 3. Run the Competition
 Run the trading scenario (starts 3 servers → runs assessment → prints artifacts → shuts down):
 ```bash
-cd agentbeats-tutorial
 uv run agentbeats-run scenarios/trading/scenario.toml
 ```
 
-### Current Scenario Config (Fast Demo Defaults)
-To make iteration fast, the current `agentbeats-tutorial/scenarios/trading/scenario.toml` is configured to run:
-- **Only 3 cycles** (`total_decision_cycles = 3`)
-- A short backtest window:
-  - `start_date = "2025-12-10"`
-  - `end_date   = "2025-12-14"`
-  - `decision_interval = "4h"`
+### Current Scenario Config
+The current `agentbeats-integration/scenarios/trading/scenario.toml` is configured for a **12-cycle evaluation** (approx. 2 days of simulated trading):
+- `start_date = "2024-12-01"`
+- `end_date = "2024-12-03"`
+- `decision_interval = "4h"`
+- `total_decision_cycles = 12`
 
 You can increase realism by:
 - Removing `total_decision_cycles` (or setting it larger)
 - Extending `start_date/end_date`
-- Adding more participants back (Conservative/Balanced/Aggressive/Momentum/MeanReversion)
 
 ## Debug Tips
 - **Use the correct environment**: run with `uv run ...` to avoid “missing uvicorn” and other venv issues.
